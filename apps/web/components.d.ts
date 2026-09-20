@@ -32,6 +32,7 @@ declare module 'vue' {
     QuerySkeleton: typeof import('./src/components/QuerySkeleton.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    Sparkline: typeof import('./src/components/Sparkline.vue')['default']
   }
   export interface ComponentCustomProperties {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

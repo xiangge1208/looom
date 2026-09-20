@@ -6,6 +6,7 @@ import { businessApi, type SalesOverview, type SalesTrend } from '@/api/business
 import AsinSearchBar from '@/components/AsinSearchBar.vue'
 import QuerySkeleton from '@/components/QuerySkeleton.vue'
 import BaseChart from '@/components/BaseChart.vue'
+import Sparkline from '@/components/Sparkline.vue'
 import AiAnalysisCard from '@/components/AiAnalysisCard.vue'
 
 /**
@@ -57,6 +58,102 @@ async function search(v: string) {
 
 onMounted(() => {
   if (asin.value) search(asin.value)
+})
+
+/**
+ * ASIN → 逐月销量序列。
+ *
+ * trend.series 本来只用于页面上方那张大图，但它已经带了每个变体的
+ * 完整月度序列，正好是表格行内迷你趋势图要的数据 —— 不必新增接口。
+ */
+const seriesByAsin = computed(() => {
+  const map = new Map<string, { values: (number | null)[]; labels: (string | null)[] }>()
+  for (const s of trend.value?.series ?? []) {
+    map.set(s.asin, { values: s.values, labels: s.labels })
+  }
+  return map
+})
+
+/**
+ * 行内趋势图的峰值标注文案。
+ *
+ * 销量是分档字符串（"200+"、"<50"），不是精确值，所以标注取
+ * **峰值那个月的分档标签**而不是把数字格式化 —— 后者会凭空造出
+ * 一个原站不存在的精确销量。
+ */
+function peakLabelOf(asinKey: string): string | null {
+  const s = seriesByAsin.value.get(asinKey)
+  if (!s) return null
+  let bestIdx = -1
+  let bestVal = -Infinity
+  s.values.forEach((v, i) => {
+    if (v !== null && Number.isFinite(v) && v > bestVal) {
+      bestVal = v
+      bestIdx = i
+    }
+  })
+  return bestIdx >= 0 ? (s.labels[bestIdx] ?? null) : null
+}
+
+/**
+ * 「最畅销变体」的 ASIN 集合。
+ *
+ * 对应原站销量列上的 🔥 徽标。用 boughtLowerBound 比较而不是
+ * boughtLabel 字符串 —— 后者是 "200+" 这类文本，没法直接比大小。
+ *
+ * ⚠️ 返回的是 Set 而不是单个 ASIN：销量是**分档区间**，并列最高
+ * 非常常见（实测 seed 里就有两个变体同为 10,000+）。只标其中一个
+ * 会让用户以为另一个卖得更差，而数据根本区分不出高低。
+ *
+ * 全组都没有销量数据时返回空集，不给任何行打标记 —— 否则会出现
+ * 「无数据反而拿了最佳」的误导（竞品对比页踩过这个坑）。
+ */
+const bestSellingAsins = computed(() => {
+  const vs = overview.value?.variants ?? []
+  let max = -Infinity
+  for (const v of vs) {
+    const n = v.boughtLowerBound
+    if (n === null || !Number.isFinite(n) || n <= 0) continue
+    if (n > max) max = n
+  }
+  if (max === -Infinity) return new Set<string>()
+
+  // 只有一个变体时标「最畅销」没有意义
+  const withData = vs.filter(
+    (v) => v.boughtLowerBound !== null && Number.isFinite(v.boughtLowerBound) && v.boughtLowerBound > 0,
+  )
+  if (withData.length < 2) return new Set<string>()
+
+  return new Set(withData.filter((v) => v.boughtLowerBound === max).map((v) => v.asin))
+})
+
+/**
+ * 「最畅销属性」：按某个维度（如 Size）聚合销量后最高的属性值。
+ *
+ * 对应原站 Size 列上的 🔥 徽标。返回 { 维度名: 最佳属性值 }。
+ */
+const bestFeatureByDim = computed(() => {
+  const result: Record<string, Set<string>> = {}
+  const dims = overview.value?.dimensions ?? []
+  const vs = overview.value?.variants ?? []
+
+  for (const d of dims) {
+    const sum = new Map<string, number>()
+    for (const v of vs) {
+      const fv = v.features?.[d]
+      const n = v.boughtLowerBound
+      if (!fv || n === null || !Number.isFinite(n) || n <= 0) continue
+      sum.set(fv, (sum.get(fv) ?? 0) + n)
+    }
+    // 同样要支持并列：分档销量聚合后属性值打平很常见
+    let max = -Infinity
+    for (const n of sum.values()) if (n > max) max = n
+    // 只有一个属性值时标「最畅销」没有意义，跳过
+    if (max > -Infinity && sum.size > 1) {
+      result[d] = new Set([...sum.entries()].filter(([, n]) => n === max).map(([fv]) => fv))
+    }
+  }
+  return result
 })
 
 /**
@@ -222,22 +319,50 @@ const totalBoughtLower = computed(() => {
               <img v-if="row.img" :src="row.img" class="cell-img" alt="" />
             </template>
           </el-table-column>
-          <el-table-column prop="asin" label="ASIN" width="130">
+          <el-table-column prop="asin" label="ASIN 信息" min-width="230">
             <template #default="{ row }">
-              <span class="mono">{{ row.asin }}</span>
+              <!-- 原站把 ASIN / 标题 / 评分聚在一格，信息密度更高 -->
+              <div class="asin-cell">
+                <div class="asin-line">
+                  <span class="mono asin-code">{{ row.asin }}</span>
+                  <el-tag
+                    v-if="row.asin === overview.target.asin && overview.target.isParentAsin"
+                    size="small"
+                    type="info"
+                    effect="plain"
+                  >
+                    父体
+                  </el-tag>
+                  <el-tag v-else size="small" effect="plain">变体</el-tag>
+                  <el-tag v-if="row.isBestSeller" size="small" type="danger" effect="plain">
+                    BS
+                  </el-tag>
+                </div>
+                <div class="asin-title" :title="row.title ?? ''">{{ row.title ?? '—' }}</div>
+                <div class="asin-rating muted">
+                  <template v-if="row.score !== null">
+                    {{ row.score }}
+                    <span>({{ (row.ratingNum ?? 0).toLocaleString() }})</span>
+                  </template>
+                  <span v-else>暂无评分</span>
+                </div>
+              </div>
             </template>
           </el-table-column>
-          <el-table-column prop="title" label="标题" min-width="200" show-overflow-tooltip />
-          <el-table-column v-for="d in overview.dimensions" :key="d" :label="d" width="110">
-            <template #default="{ row }">{{ row.features[d] ?? '—' }}</template>
-          </el-table-column>
-          <el-table-column label="评分" width="120">
+          <el-table-column v-for="d in overview.dimensions" :key="d" :label="d" width="126">
             <template #default="{ row }">
-              <template v-if="row.score !== null">
-                {{ row.score }}
-                <span class="muted">({{ (row.ratingNum ?? 0).toLocaleString() }})</span>
-              </template>
-              <span v-else class="muted">—</span>
+              <div class="feat-cell">
+                <span>{{ row.features[d] ?? '—' }}</span>
+                <!-- 最畅销属性：该维度下销量合计最高的属性值 -->
+                <el-tag
+                  v-if="row.features[d] && bestFeatureByDim[d]?.has(row.features[d])"
+                  size="small"
+                  type="danger"
+                  effect="plain"
+                >
+                  最畅销属性
+                </el-tag>
+              </div>
             </template>
           </el-table-column>
           <el-table-column label="价格" width="92">
@@ -246,12 +371,37 @@ const totalBoughtLower = computed(() => {
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="近一月销量" width="110">
+          <el-table-column label="子体近 30 天销量" width="132">
             <template #default="{ row }">
-              <el-tag v-if="row.boughtLabel" size="small" effect="plain">
-                {{ row.boughtLabel }}
-              </el-tag>
-              <span v-else class="muted">—</span>
+              <div class="sales-cell">
+                <el-tag v-if="row.boughtLabel" size="small" effect="plain">
+                  {{ row.boughtLabel }}
+                </el-tag>
+                <span v-else class="muted">—</span>
+                <!-- 最畅销变体：组内销量分档下界最高的那个 -->
+                <el-tag
+                  v-if="bestSellingAsins.has(row.asin)"
+                  size="small"
+                  type="danger"
+                  effect="plain"
+                >
+                  最畅销变体
+                </el-tag>
+              </div>
+            </template>
+          </el-table-column>
+          <!--
+            月销量趋势：数据来自 trend.series（本来只喂上方大图），
+            峰值标注用该月的销量分档标签，不把区间值当精确数字显示。
+          -->
+          <el-table-column label="月销量趋势" width="164">
+            <template #default="{ row }">
+              <Sparkline
+                :values="seriesByAsin.get(row.asin)?.values ?? []"
+                :peak-label="peakLabelOf(row.asin)"
+                :width="148"
+                :height="42"
+              />
             </template>
           </el-table-column>
           <el-table-column label="流量占比" width="100">
@@ -262,14 +412,43 @@ const totalBoughtLower = computed(() => {
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="140" fixed="right">
+          <!-- 操作列对齐原站的 4 项下钻入口（原先只有前两项） -->
+          <el-table-column label="操作" width="110" fixed="right">
             <template #default="{ row }">
-              <el-button link type="primary" size="small" @click="router.push({ name: 'traffic', query: { asin: row.asin } })">
-                流量结构
-              </el-button>
-              <el-button link type="primary" size="small" @click="router.push({ name: 'keywords', query: { asin: row.asin } })">
-                流量词
-              </el-button>
+              <div class="ops">
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="router.push({ name: 'traffic', query: { asin: row.asin } })"
+                >
+                  查流量结构
+                </el-button>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="router.push({ name: 'keywords', query: { asin: row.asin } })"
+                >
+                  反查流量词
+                </el-button>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="router.push({ name: 'ads', query: { asin: row.asin } })"
+                >
+                  查广告架构
+                </el-button>
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  @click="router.push({ name: 'timeline', query: { asin: row.asin } })"
+                >
+                  查运营节奏
+                </el-button>
+              </div>
             </template>
           </el-table-column>
         </el-table>
@@ -369,5 +548,62 @@ const totalBoughtLower = computed(() => {
   margin: 10px 0 0;
   font-size: 12px;
   line-height: 1.6;
+}
+
+/* ---- 变体表格的复合单元格（对齐原站的信息密度）---- */
+
+.asin-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 0;
+}
+
+.asin-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.asin-code {
+  font-weight: 600;
+}
+
+.asin-title {
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-700);
+  /* 标题较长，最多两行，超出省略 */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.asin-rating {
+  font-size: 12px;
+}
+
+.feat-cell,
+.sales-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+/* 操作列纵向排布，与原站一致；横排在 4 项时会挤成两行且难点中 */
+.ops {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.ops :deep(.el-button) {
+  margin-left: 0;
+  height: 22px;
+  padding: 0;
 }
 </style>

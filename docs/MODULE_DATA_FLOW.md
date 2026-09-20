@@ -1108,6 +1108,72 @@ flowchart TD
 
 ---
 
+## 补缺表（2026-09-20 已建表并灌数）
+
+DDL 见 [db/schema-03-gap-tables.sql](../db/schema-03-gap-tables.sql)，已在 Doris 执行并灌入真实数据（非种子）。
+
+```mermaid
+flowchart LR
+    P1[("sif_keyword_aba_trend<br/>.festivals")] -->|"去重 156 组合"| D1[("dim_festival<br/>✅ 156 行")]
+    P2[("sif_keyword_overview<br/>.raw")] -->|"反查 keyword_id<br/>命中 15.2%"| D2[("fact_keyword_competition_snapshot<br/>✅ 3,244 行")]
+    P3["sif_api_log<br/>web-keyword-conversion"] -->|"反查 keyword_id<br/>命中 9.4%"| D3[("fact_keyword_conversion_funnel<br/>✅ 854 行")]
+
+    style D1 fill:#2a4a2a,stroke:#6c6
+    style D2 fill:#2a4a2a,stroke:#6c6
+    style D3 fill:#2a4a2a,stroke:#6c6
+    style P1 fill:#2a3a4a,stroke:#69c
+    style P2 fill:#2a3a4a,stroke:#69c
+    style P3 fill:#4a2a2a,stroke:#c66
+```
+
+| 表 | 列数 | 灌入行数 | 源可用率 | 说明 |
+|---|---:|---:|---|---|
+| `dim_festival` | 5 | **156** | 100% | 12 个节日 × 7 站点 × 年度窗口，**无 keyword_id 依赖，完整落地** |
+| `fact_keyword_competition_snapshot` | 14 | **3,244** | 3,244/21,276 = **15.2%** | 受 `keyword_id` 反查率限制 |
+| `fact_keyword_conversion_funnel` | 16 | **854** | 854/9,038 = **9.4%** | 同上，且源本身无 `keywordId` |
+
+**建表时按实测值域定的三个关键决策**
+
+1. **`max_kw_price` 用 `DECIMAL(12,2)` 不是 `(10,2)`** —— 实测最大值 **35,690.36**，10,2 会溢出
+2. **`dim_festival` 主键必须带 `country`** —— 实测同一节日各站窗口不同：
+   `Prime Day会员日` 2026 年 JP 是 `07-10~07-13`，其余 6 站是 `06-23~06-26`；
+   `春季大促` 2026 年 US 是 `03-25~03-31`，欧洲 5 站是 `03-10~03-16`。
+   不带 country 会互相覆盖。已验证 `(name, country, start_date)` 唯一确定 `end_date`，故 `end_date` 不进主键
+3. **`acAsinNum`/`erAsinNum`/`trAsinNum`/`demandRatio`/`weekDate` 5 列不建** —— 实测全表恒 0 或恒 NULL，建了就是永久空列
+
+**实查验证**（Doris 上真实跑通）
+
+```sql
+-- 转化漏斗 TOP 搜索量
+SELECT keyword, stat_week, search_volume, click_volume, purchase_volume,
+       ROUND(search_click_ratio,4) ctr, ROUND(avg_kw_price,2) avg_price
+FROM fact_keyword_conversion_funnel WHERE country='US'
+ORDER BY search_volume DESC LIMIT 5;
+```
+```
+halloween decorations  2026-08-30  717552  182920  5929  0.2549  19.15
+fall decor             2026-08-30  631761  146751  4687  0.2323  18.88
+womens tops            2026-08-23  504277   83151   711  0.1649  11.12
+```
+
+```sql
+-- dim_festival 的实际用法：按窗口给数据打节日标
+SELECT f.festival_name, f.country, f.start_date, f.end_date, COUNT(c.keyword_id) kw_in_window
+FROM dim_festival f
+LEFT JOIN fact_keyword_competition_snapshot c
+       ON c.country = f.country AND c.stat_week BETWEEN f.start_date AND f.end_date
+GROUP BY 1,2,3,4 HAVING kw_in_window > 0 ORDER BY kw_in_window DESC;
+```
+```
+返校季  US  2026-08-03  2026-10-03  3042   ← 3,042 个关键词落在返校季窗口内
+```
+
+> ⚠️ **后两张表的低命中率再次印证 `keyword_id` 是全局阻断项**：
+> 不是数据没抓到（源分别有 21,276 和 9,038 行），而是**反查不到 ID**。
+> 若采纳「主键改用 `(keyword_text, country)`」的方案，这两张表能立刻从 15.2%/9.4% 提到接近 100%。
+
+---
+
 ## PG 源表全景（反向视角：一张 PG 表喂哪些 Doris 表）
 
 ```mermaid
@@ -1163,9 +1229,9 @@ flowchart LR
 
 | PG 数据 | 量 | 为什么落不下去 | 建议 |
 |---|---:|---|---|
-| **ABA 转化漏斗指标**（`web-keyword-conversion.data.keywords[]`） | **9,038 个元素**，11 个字段 **100%**、`conversionShared` 79.9%、⚠️ `weekDate` **0%** | 🔴 **43 张表零对应**。`fact_keyword_metric_snapshot` 只有 4 个度量 | **建议新建 `fact_keyword_conversion_funnel`**，这是本次发现的最大 schema 缺口 |
-| **关键词竞争格局指标**（`sif_keyword_overview.raw` 的 ASIN 计数） | 21,244 行中：`globalKeywordNum` **100%**；`nfAsinNum`/`ppcAdAsinNum` 52.5%、`brandAdAsinNum` 52.4%、`spAdAsinNum` 51.6%、`saleNum` 52.5%；⚠️ `acAsinNum`/`erAsinNum`/`trAsinNum` **全部为 0** | 🔴 无事实表 | 新建 `fact_keyword_competition_snapshot`，**只加 6 列**（3 个全 0 的别加） |
-| **节假日日历**（`festivals[][].{name,startDate,endDate}`） | `web-est-searches-history` 展开 **93,029** 个叶子元素；`sif_keyword_aba_trend.festivals` 非空 **77,872/127,587 = 61.0%** | 🔴 **完全无表**，被彻底漏掉的维度 | 建议新建 `dim_festival` |
+| ~~ABA 转化漏斗指标~~ | — | ✅ **已建表并灌数** | `fact_keyword_conversion_funnel`，854 行，见 §补缺表 |
+| ~~关键词竞争格局指标~~ | — | ✅ **已建表并灌数** | `fact_keyword_competition_snapshot`，3,244 行 |
+| ~~节假日日历~~ | — | ✅ **已建表并灌数** | `dim_festival`，156 行 |
 | **关键词 TOP ASIN 明细**（`web-keyword-conversion.data.keywords[].topAsins[]`） | **90,374 个元素**，`asin`/`img`/`title` 100%、`price` 90,369（99.99%） | `rel_keyword_top_asin` 只有 `rank_position` | 加 `img`/`title`/`price` 3 列 |
 | `sif_asin_keyword_diagnose` | 202,866 行 | Doris 无「关键词归因诊断」表 | **它天然带 `granularity+period`**，可解模块 5 的历史回溯问题 |
 | `sif_asin_traffic_change` 的 `kind='main'` | **3,698 行** | Doris 43 张表**无对应落点** | 带 `contri_change`/`change_reasons` 归因数据，需新建表 |
