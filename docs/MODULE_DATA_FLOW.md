@@ -126,6 +126,23 @@ flowchart TD
 | **`is_best_seller`** | tinyint | 🟡 **改判：有源** `web-asin-variants` → `data.variants[].isBestSeller` | 解析 JSON | **11,164/12,988 非空（86.0%）**，覆盖 10,866 ASIN，其中 597 个为 true |
 | `created_at`/`updated_at` | datetime | ⚙️ ETL 写入时间 | `now()` | — |
 
+> ## ⏰ 41% 不是稀疏，是上游 2026-09-16 才加的新字段（按天实测）
+>
+> `brand`/`brandHref`/`firstAvailableDay`/`snapshotUpdateTime` 的填充率随日期**突变**，逐日统计：
+>
+> | 抓取日 | 响应行数 | 含 brand 的行 |
+> |---|---:|---:|
+> | 2026-08-10 ~ 09-15（26 天累计） | 1,239 | **0** |
+> | **2026-09-16** | 419 | **55** |
+> | 2026-09-17 | 406 | **354** |
+> | 2026-09-18 | 291 | 209 |
+> | 2026-09-19 | 82 | 61 |
+> | 2026-09-20 | 42 | 32 |
+>
+> **含义**：09-16 之前抓的数据永久没有 brand，之后抓的基本都有（09-17 起 87%）。
+> 所以**重抓一遍就能把 brand 覆盖率从 41% 提到接近 100%**，不需要另找数据源。
+> 这也意味着 41% 这个数字会随时间自动上升，ETL 不必为此设计补偿逻辑。
+
 > ⚠️ **修正此前的判断**：ETL_GAP_ANALYSIS §3.1 记录「`brand`/`brand_href`/`first_available_day` 全库 0%」。
 > 那个结论只查了 `asin-basic-info` 与 `web-sales-asin` 两个接口。**实测 `web-sales-keyword` 有这些字段**
 > （48,975 行 asins[]，brand 填充 41%，样例 `10 Strawberry Street` + 店铺链接，是真实值不是占位）。
@@ -671,7 +688,25 @@ flowchart TD
 | `score_change_ratio` | double | `…->>'scoreChangeRatio'` | 🟡 JSON | 100% |
 | `contri_change_ratio` | double | `…->>'contriChangeRatio'` | 🟡 JSON | 100% |
 
-> ## 🔄 2026-09-20 二次改判：`channel` **有源**，但在另一张表里
+> ## 🔄 二次改判（之二）：`web-traffic-diagnose.extraData` 有**分渠道得分**，7 渠道 100%
+>
+> 实测 `web-traffic-diagnose.data.extraData` 是 **7 个渠道 × 对象矩阵**，全部 1,726/1,726 = **100%**：
+>
+> | 渠道 key | occ | `score` | `diffScore` | `isChanged` | `typeRatio` |
+> |---|---:|---:|---:|---:|---:|
+> | `totalScore`/`nfScore`/`adScore`/`spScore`/`recSpScore`/`sbScore`/`sbvScore` | 1,726 | **1,726** | **1,726** | **1,726** | **0** |
+>
+> **这是真正的分渠道得分**（不是排名频次），比下面 `p_change_reason` 更贴合 `fact_asin_keyword_score.score` 的语义。
+> 但注意：它挂在 `data.extraData` 上是 **ASIN 级**（整个 Listing 的渠道得分），**不是关键词级**——
+> 若 `fact_asin_keyword_score` 要求 ASIN×关键词×渠道 三维，它只能填 ASIN×渠道两维。
+> `typeRatio` 全 0，别加列。另外 `fact_asin_traffic_channel` 缺 `diff_score`/`is_changed` 两列可从这里补。
+>
+> ⚠️ **同名异型陷阱（已实测确认）**：`web-traffic-diagnose` 里
+> `details[].estSearchesNum` 是 **number**（215,347 个），
+> 而 `details[].vchangeReason.estSearchesNum` 是 **object**（215,347 个）。
+> 同名字段两种类型各占一半，ETL 若按字段名统一 CAST 必然报错。`searchesRank` 同样是双型。
+
+> ## 🔄 二次改判（之一）：`channel` **有源**，但在另一张表里
 >
 > 深挖 JSON 后发现：`sif_asin_keyword_diagnose.p_change_reason`（**202,866 行，从未被剖析过**）
 > 里就有**分渠道明细**。全表聚合实测（非抽样）：
@@ -1128,13 +1163,13 @@ flowchart LR
 
 | PG 数据 | 量 | 为什么落不下去 | 建议 |
 |---|---:|---|---|
-| **ABA 转化漏斗指标**（`web-keyword-conversion` 的 13 个字段：`searchVolume`/`clickVolume`/`purchaseVolume`/`searchClickRatio`/`searchPurchaseRatio`/`clickShared`/`conversionShared`/`avgKwPrice`/`maxKwPrice`/`minKwPrice` 等） | 非空 **82.5%** 行 | 🔴 **43 张表零对应**。`fact_keyword_metric_snapshot` 只有 4 个度量 | **建议新建 `fact_keyword_conversion_funnel`**，这是本次发现的最大 schema 缺口 |
-| **关键词竞争格局指标**（`keyword-overview` 的 9 个 ASIN 计数 + `saleNum`/`globalKeywordNum`） | 52.5~100% | 🔴 无事实表 | 建议新建 `fact_keyword_competition_snapshot`，或给 metric 表加 9 列 |
-| **节假日日历**（`festivals[][].{name,startDate,endDate}`，含「黑五网一」等） | **86,554 occ**，91.9% 行 | 🔴 **完全无表**，是被彻底漏掉的一个维度 | 建议新建 `dim_festival` |
+| **ABA 转化漏斗指标**（`web-keyword-conversion.data.keywords[]`） | **9,038 个元素**，11 个字段 **100%**、`conversionShared` 79.9%、⚠️ `weekDate` **0%** | 🔴 **43 张表零对应**。`fact_keyword_metric_snapshot` 只有 4 个度量 | **建议新建 `fact_keyword_conversion_funnel`**，这是本次发现的最大 schema 缺口 |
+| **关键词竞争格局指标**（`sif_keyword_overview.raw` 的 ASIN 计数） | 21,244 行中：`globalKeywordNum` **100%**；`nfAsinNum`/`ppcAdAsinNum` 52.5%、`brandAdAsinNum` 52.4%、`spAdAsinNum` 51.6%、`saleNum` 52.5%；⚠️ `acAsinNum`/`erAsinNum`/`trAsinNum` **全部为 0** | 🔴 无事实表 | 新建 `fact_keyword_competition_snapshot`，**只加 6 列**（3 个全 0 的别加） |
+| **节假日日历**（`festivals[][].{name,startDate,endDate}`） | `web-est-searches-history` 展开 **93,029** 个叶子元素；`sif_keyword_aba_trend.festivals` 非空 **77,872/127,587 = 61.0%** | 🔴 **完全无表**，被彻底漏掉的维度 | 建议新建 `dim_festival` |
+| **关键词 TOP ASIN 明细**（`web-keyword-conversion.data.keywords[].topAsins[]`） | **90,374 个元素**，`asin`/`img`/`title` 100%、`price` 90,369（99.99%） | `rel_keyword_top_asin` 只有 `rank_position` | 加 `img`/`title`/`price` 3 列 |
 | `sif_asin_keyword_diagnose` | 202,866 行 | Doris 无「关键词归因诊断」表 | **它天然带 `granularity+period`**，可解模块 5 的历史回溯问题 |
 | `sif_asin_traffic_change` 的 `kind='main'` | **3,698 行** | Doris 43 张表**无对应落点** | 带 `contri_change`/`change_reasons` 归因数据，需新建表 |
-| 关键词 TOP ASIN 的 `img`/`title`/`price` | 90,374 occ | `rel_keyword_top_asin` 只有 `rank_position` | 加 3 列，否则前端无法展示 |
-| 日粒度价格/评分/BSR（`traffic-trend` 的 `buyboxPrice[]`/`review[]`/`star[]`/`bsr[]`） | 96.5~98.5% | `fact_asin_listing_snapshot` 是**月粒度** | 日粒度数据被聚合掉，若要日趋势需扩表 |
+| 日粒度价格/评分/BSR（`traffic-trend` 的 `buyboxPrice[]`/`review[]`/`bsr[]`/`woot[]`） | **2,462/2,462 行 = 100%** 都带这些数组 | `fact_asin_listing_snapshot` 是**月粒度** | 日粒度被聚合掉，若要日趋势需扩表 |
 | `sif_asin_traffic_change_score` | 418 行 | Doris 无 ASIN 级 7 口径变化率表 | 可补模块 6 的归因摘要 |
 | `sif_asin_traffic_daily` 多列 | — | 4 张下游表都没接 | `woot`(86.2%)、`buybox_seller`(86.2%)、`seller`(86.5%)、`bought_past_month`(66.3%)、`deal_price`(86.1%) |
 
