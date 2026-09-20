@@ -33,6 +33,11 @@ services:
       DB_NAME: ${DB_NAME:-looom}
       DB_USER: ${DB_USER:-etl_user}
       DB_PASSWORD: ${DB_PASSWORD}
+      # 建表要 CREATE 权限，etl_user 通常没有，所以启动时的自动建表
+      # （apps/api/scripts/init-db.mjs）走 root。不配也能跑 —— 脚本会退回
+      # etl_user，表已存在的环境没影响，但全新环境会建表失败。
+      DB_ROOT_USER: ${DB_ROOT_USER:-root}
+      DB_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-}
       JWT_SECRET: ${JWT_SECRET}
       JWT_ACCESS_EXPIRES: ${JWT_ACCESS_EXPIRES:-2h}
       JWT_REFRESH_EXPIRES: ${JWT_REFRESH_EXPIRES:-30d}
