@@ -1,0 +1,240 @@
+/*
+ * 全局样式
+ *
+ * 视觉方向：数据密集型工具，克制、信息优先。
+ * 不抄原站配色（原站主色是 #009f52 绿），这里用偏冷的靛蓝做主色，
+ * 与「数据分析」气质一致，也明确区别于原站。
+ */
+
+:root {
+  /* 主色：靛蓝。比纯蓝更沉稳，长时间看表格不刺眼 */
+  --brand-500: #4f46e5;
+  --brand-600: #4338ca;
+  --brand-50: #eef2ff;
+
+  /* 语义色 */
+  --ok: #0d9488;
+  --warn: #d97706;
+  --danger: #dc2626;
+
+  /* 中性色阶 */
+  --ink-900: #111827;
+  --ink-700: #374151;
+  --ink-500: #6b7280;
+  --ink-300: #d1d5db;
+  --ink-100: #f3f4f6;
+  --ink-50: #f9fafb;
+
+  --line: #e5e7eb;
+  --radius: 8px;
+
+  /* 覆盖 Element Plus 主色，让组件跟着主色走 */
+  --el-color-primary: var(--brand-500);
+  --el-border-radius-base: var(--radius);
+  --el-font-size-base: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  /* 数字用等宽对齐，表格里的金额和排名才不会跳 */
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-900);
+  background: var(--ink-50);
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--brand-500);
+  text-decoration: none;
+}
+
+/* ---- 通用工具类 ---- */
+
+.page {
+  padding: 20px 24px;
+}
+
+.page-title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.page-desc {
+  margin: 0 0 20px;
+  color: var(--ink-500);
+  font-size: 13px;
+}
+
+.card {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.muted {
+  color: var(--ink-500);
+}
+
+/* ---- Markdown 渲染（AI 分析结果用）---- */
+
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--ink-700);
+  word-break: break-word;
+}
+
+.markdown-body h2 {
+  margin: 20px 0 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink-900);
+}
+
+.markdown-body h2:first-child {
+  margin-top: 0;
+}
+
+.markdown-body h3 {
+  margin: 16px 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink-900);
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 20px;
+  margin: 8px 0;
+}
+
+.markdown-body li {
+  margin: 3px 0;
+}
+
+.markdown-body table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 13px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--line);
+  padding: 7px 10px;
+  text-align: left;
+}
+
+.markdown-body th {
+  background: var(--ink-50);
+  font-weight: 600;
+}
+
+.markdown-body code {
+  background: var(--ink-100);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.markdown-body pre {
+  background: var(--ink-900);
+  color: #e5e7eb;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.markdown-body pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+}
+
+.markdown-body strong {
+  color: var(--ink-900);
+  font-weight: 600;
+}
+
+/* 流式输出时的光标，让「正在生成」有视觉反馈 */
+.typing-cursor::after {
+  content: '▋';
+  margin-left: 2px;
+  color: var(--brand-500);
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* =====================================================================
+ * 窄屏适配（P4）
+ *
+ * 实测 414px 下的情况：
+ *   - 页面本身没有横向溢出（documentElement.scrollWidth == clientWidth）
+ *   - 但表格内容宽 1074px，9 列里有 5 列在视口外
+ *   - Element Plus 自带的 .el-scrollbar__wrap--h 是可横向滚动的（实测滚到
+ *     scrollLeft=798 能看到「近一月销量 / 流量占比」），功能上没坏
+ *
+ * 问题只是**没有可滚动的视觉提示** —— 手机上用户不知道可以左右滑。
+ * 所以这里只加提示，不重构表格布局：
+ * 把表格改成卡片流会让「多列横向对比」这个核心用途失效，代价更大。
+ * ===================================================================== */
+@media (max-width: 768px) {
+  /* 右侧渐隐，暗示内容被截断、可以横向滑动 */
+  .card .el-table::after {
+    content: '';
+    position: absolute;
+  top: 0;
+    right: 0;
+    width: 24px;
+    height: 100%;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, #fff);
+  }
+
+  .card .el-table {
+    position: relative;
+  }
+
+  /* 页面左右内边距收窄，把宝贵的横向空间让给内容 */
+  .page {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .page-title {
+    font-size: 19px;
+  }
+
+  /* 筛选条在窄屏改为纵向堆叠，避免挤成一列一个字 */
+  .filter-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .filter-row .f-item {
+    justify-content: space-between;
+  }
+}

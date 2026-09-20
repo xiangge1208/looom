@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "sif-recon",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["tools/sif-proxy.mjs"],
+    "port": 9958,
+    "autoPort": false
+    },
+    {
+      "name": "looom-web",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "apps/web"],
+      "port": 5173,
+      "autoPort": true
+    }
+  ]
+}

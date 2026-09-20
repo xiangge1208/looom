@@ -1,0 +1,822 @@
+[
+ {
+  "path": "/test",
+  "name": "",
+  "chunks": [
+   3,
+   15,
+   65
+  ],
+  "mod": []
+ },
+ {
+  "path": "/",
+  "name": "",
+  "chunks": [],
+  "mod": []
+ },
+ {
+  "path": "/tx/landingpage",
+  "name": "",
+  "chunks": [],
+  "mod": []
+ },
+ {
+  "path": "/mcp",
+  "name": "",
+  "chunks": [
+   5,
+   60
+  ],
+  "mod": []
+ },
+ {
+  "path": "/analysis-report",
+  "name": "",
+  "chunks": [
+   85
+  ],
+  "mod": []
+ },
+ {
+  "path": "/mcp-console",
+  "name": "",
+  "chunks": [
+   5,
+   56
+  ],
+  "mod": []
+ },
+ {
+  "path": "/layout",
+  "name": "",
+  "chunks": [
+   1,
+   3,
+   7,
+   15,
+   53
+  ],
+  "mod": []
+ },
+ {
+  "path": "/faq",
+  "name": "",
+  "chunks": [
+   9,
+   101
+  ],
+  "mod": []
+ },
+ {
+  "path": "/multi-variants",
+  "name": "multi-variants",
+  "chunks": [
+   0,
+   8,
+   1,
+   3,
+   31
+  ],
+  "mod": []
+ },
+ {
+  "path": "/ad-multiNotes-view",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   62
+  ],
+  "mod": []
+ },
+ {
+  "path": "/Sales",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   38
+  ],
+  "mod": []
+ },
+ {
+  "path": "/search",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   35
+  ],
+  "mod": []
+ },
+ {
+  "path": "/reverse",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   8,
+   12,
+   26
+  ],
+  "mod": []
+ },
+ {
+  "path": "/compare-structure",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   34
+  ],
+  "mod": []
+ },
+ {
+  "path": "/product",
+  "name": "",
+  "chunks": [
+   0,
+   8,
+   1,
+   3,
+   50
+  ],
+  "mod": []
+ },
+ {
+  "path": "/words",
+  "name": "",
+  "chunks": [
+   0,
+   8,
+   121,
+   1,
+   51
+  ],
+  "mod": []
+ },
+ {
+  "path": "/compare-traffic",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   29
+  ],
+  "mod": []
+ },
+ {
+  "path": "/compare-sales",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   37
+  ],
+  "mod": []
+ },
+ {
+  "path": "/market",
+  "name": "",
+  "chunks": [
+   0,
+   9,
+   10,
+   102
+  ],
+  "mod": []
+ },
+ {
+  "path": "/development",
+  "name": "",
+  "chunks": [
+   0,
+   9,
+   10,
+   100
+  ],
+  "mod": []
+ },
+ {
+  "path": "/datacenter",
+  "name": "",
+  "chunks": [
+   9,
+   10,
+   75
+  ],
+  "mod": []
+ },
+ {
+  "path": "/hourlyrank",
+  "name": "",
+  "chunks": [
+   0,
+   8,
+   1,
+   3,
+   55
+  ],
+  "mod": []
+ },
+ {
+  "path": "/dailyrank",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   12,
+   1,
+   49
+  ],
+  "mod": []
+ },
+ {
+  "path": "/member",
+  "name": "",
+  "chunks": [
+   0,
+   70
+  ],
+  "mod": []
+ },
+ {
+  "path": "/timemachine-traffic",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   27
+  ],
+  "mod": []
+ },
+ {
+  "path": "/timemachine-product",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   28
+  ],
+  "mod": []
+ },
+ {
+  "path": "/keywords",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   14,
+   13,
+   61
+  ],
+  "mod": []
+ },
+ {
+  "path": "/category",
+  "name": "",
+  "chunks": [
+   103
+  ],
+  "mod": []
+ },
+ {
+  "path": "/expand",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   14,
+   13,
+   58
+  ],
+  "mod": []
+ },
+ {
+  "path": "/landingPage",
+  "name": "",
+  "chunks": [
+   89
+  ],
+  "mod": []
+ },
+ {
+  "path": "productTarget",
+  "name": "",
+  "chunks": [
+   0,
+   108
+  ],
+  "mod": []
+ },
+ {
+  "path": "co-marketing",
+  "name": "",
+  "chunks": [
+   0,
+   107
+  ],
+  "mod": []
+ },
+ {
+  "path": "adxray-ext-web",
+  "name": "",
+  "chunks": [
+   0,
+   105
+  ],
+  "mod": []
+ },
+ {
+  "path": "2025_new_trends",
+  "name": "",
+  "chunks": [
+   106
+  ],
+  "mod": []
+ },
+ {
+  "path": "recommend",
+  "name": "",
+  "chunks": [
+   80
+  ],
+  "mod": []
+ },
+ {
+  "path": "/compete",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   32
+  ],
+  "mod": []
+ },
+ {
+  "path": "/snapshot",
+  "name": "",
+  "chunks": [
+   2,
+   8,
+   12,
+   1,
+   44
+  ],
+  "mod": []
+ },
+ {
+  "path": "/amount",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   46
+  ],
+  "mod": []
+ },
+ {
+  "path": "/conversion-rate",
+  "name": "",
+  "chunks": [
+   2,
+   4,
+   6,
+   1,
+   40
+  ],
+  "mod": []
+ },
+ {
+  "path": "/cpc-realtime",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   63
+  ],
+  "mod": []
+ },
+ {
+  "path": "/cpc-browsetree",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   48
+  ],
+  "mod": []
+ },
+ {
+  "path": "/keyword-relatedness",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   43
+  ],
+  "mod": []
+ },
+ {
+  "path": "/root-relatedness",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   33
+  ],
+  "mod": []
+ },
+ {
+  "path": "/recommend",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   39
+  ],
+  "mod": []
+ },
+ {
+  "path": "/niche-relatedness",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   47
+  ],
+  "mod": []
+ },
+ {
+  "path": "/asin-relatedness",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   45
+  ],
+  "mod": []
+ },
+ {
+  "path": "/adxray-adgroup",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   36
+  ],
+  "mod": []
+ },
+ {
+  "path": "/adxray-searchterm",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   42
+  ],
+  "mod": []
+ },
+ {
+  "path": "/adxray-productTarget",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   52
+  ],
+  "mod": []
+ },
+ {
+  "path": "/adxray-variation",
+  "name": "",
+  "chunks": [
+   124
+  ],
+  "mod": []
+ },
+ {
+  "path": "/adxray-structure",
+  "name": "",
+  "chunks": [
+   0,
+   2,
+   4,
+   6,
+   30
+  ],
+  "mod": []
+ },
+ {
+  "path": "/ad-multiNotes-submit",
+  "name": "",
+  "chunks": [
+   0,
+   1,
+   7,
+   83
+  ],
+  "mod": []
+ },
+ {
+  "path": "/old_reverse",
+  "name": "old_reverse",
+  "chunks": [
+   0,
+   1,
+   3,
+   7,
+   41
+  ],
+  "mod": []
+ },
+ {
+  "path": "/freetrial",
+  "name": "",
+  "chunks": [
+   94
+  ],
+  "mod": []
+ },
+ {
+  "path": "/example",
+  "name": "",
+  "chunks": [
+   97
+  ],
+  "mod": []
+ },
+ {
+  "path": "/about",
+  "name": "",
+  "chunks": [
+   0,
+   84
+  ],
+  "mod": []
+ },
+ {
+  "path": "/photo",
+  "name": "",
+  "chunks": [
+   74
+  ],
+  "mod": []
+ },
+ {
+  "path": "/comment",
+  "name": "",
+  "chunks": [
+   73
+  ],
+  "mod": []
+ },
+ {
+  "path": "/maintain",
+  "name": "",
+  "chunks": [
+   88
+  ],
+  "mod": []
+ },
+ {
+  "path": "/blacklist",
+  "name": "",
+  "chunks": [
+   79
+  ],
+  "mod": []
+ },
+ {
+  "path": "/insideSif",
+  "name": "",
+  "chunks": [
+   81
+  ],
+  "mod": []
+ },
+ {
+  "path": "/rule",
+  "name": "",
+  "chunks": [
+   0,
+   98
+  ],
+  "mod": []
+ },
+ {
+  "path": "/privacy",
+  "name": "",
+  "chunks": [
+   91
+  ],
+  "mod": []
+ },
+ {
+  "path": "/privacy20251202",
+  "name": "",
+  "chunks": [
+   99
+  ],
+  "mod": []
+ },
+ {
+  "path": "/contract",
+  "name": "",
+  "chunks": [
+   90
+  ],
+  "mod": []
+ },
+ {
+  "path": "/recover-user-account",
+  "name": "",
+  "chunks": [
+   92
+  ],
+  "mod": []
+ },
+ {
+  "path": "/contract20251202",
+  "name": "",
+  "chunks": [
+   95
+  ],
+  "mod": []
+ },
+ {
+  "path": "/recharge",
+  "name": "",
+  "chunks": [
+   14,
+   120
+  ],
+  "mod": []
+ },
+ {
+  "path": "/experiencecard",
+  "name": "",
+  "chunks": [],
+  "mod": []
+ },
+ {
+  "path": "/infor",
+  "name": "",
+  "chunks": [
+   5,
+   64
+  ],
+  "mod": []
+ },
+ {
+  "path": "/vipInfor",
+  "name": "",
+  "chunks": [
+   77
+  ],
+  "mod": []
+ },
+ {
+  "path": "/integral",
+  "name": "",
+  "chunks": [
+   71
+  ],
+  "mod": []
+ },
+ {
+  "path": "/purchaseRecords",
+  "name": "",
+  "chunks": [
+   5,
+   66
+  ],
+  "mod": []
+ },
+ {
+  "path": "/managecard",
+  "name": "",
+  "chunks": [],
+  "mod": []
+ },
+ {
+  "path": "/team",
+  "name": "",
+  "chunks": [
+   2,
+   4,
+   6,
+   59
+  ],
+  "mod": []
+ },
+ {
+  "path": "/invite",
+  "name": "",
+  "chunks": [
+   78
+  ],
+  "mod": []
+ },
+ {
+  "path": "/report",
+  "name": "",
+  "chunks": [],
+  "mod": []
+ },
+ {
+  "path": "loading",
+  "name": "reportLoading",
+  "chunks": [
+   87
+  ],
+  "mod": []
+ },
+ {
+  "path": "info",
+  "name": "reportInfo",
+  "chunks": [
+   122,
+   54
+  ],
+  "mod": []
+ },
+ {
+  "path": "/amazon/sp-api/beforeAuth",
+  "name": "",
+  "chunks": [
+   2,
+   4,
+   67
+  ],
+  "mod": []
+ },
+ {
+  "path": "/amazon/sp-api/waitAuth",
+  "name": "",
+  "chunks": [
+   2,
+   4,
+   68
+  ],
+  "mod": []
+ },
+ {
+  "path": "/track",
+  "name": "",
+  "chunks": [
+   111
+  ],
+  "mod": []
+ },
+ {
+  "path": "/test",
+  "name": "",
+  "chunks": [
+   0,
+   69
+  ],
+  "mod": []
+ }
+]

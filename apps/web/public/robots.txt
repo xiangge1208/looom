@@ -1,0 +1,11 @@
+# Looom
+#
+# 业务页面都需要登录且内容是用户私有的查询结果，
+# 收录既无意义也可能泄露数据，所以只放开登录/注册页。
+# 路由层面也会为业务页输出 <meta name="robots" content="noindex,nofollow">。
+
+User-agent: *
+Allow: /$
+Allow: /login
+Allow: /register
+Disallow: /

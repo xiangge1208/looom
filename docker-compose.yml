@@ -1,0 +1,71 @@
+# =====================================================================
+# Docker Compose —— 只负责后端 + 前端
+#
+# ⚠️ Doris 不在这里：它是已部署的外部实例，不由本项目管理。
+#    连接信息走 .env，见 docs/DORIS_SETUP.md。
+#
+# 用法：
+#   cp .env.example .env   # 填好密码
+#   docker compose up -d
+#
+# 建表和 seed 由 api 容器启动时自动完成（幂等，表已存在就跳过），
+# 见 apps/api/scripts/init-db.mjs。不需要先手动跑 setup-doris.sh ——
+# 那个脚本保留给「本机不用容器直接开发」的场景。
+#
+# 前端 http://localhost:8080  后端 http://localhost:3000/api
+# =====================================================================
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: looom-api
+    restart: unless-stopped
+    ports:
+      - '${API_PORT:-3000}:3000'
+    environment:
+      # 容器内访问宿主机上的 Doris 要用 host.docker.internal。
+      # 若 Doris 在远端服务器，把 .env 的 DB_HOST 设成那台机器的 IP 即可，
+      # 这里的默认值只在 .env 没配时兜底。
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+      DB_PORT: ${DB_PORT:-9030}
+      DB_NAME: ${DB_NAME:-looom}
+      DB_USER: ${DB_USER:-etl_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ACCESS_EXPIRES: ${JWT_ACCESS_EXPIRES:-2h}
+      JWT_REFRESH_EXPIRES: ${JWT_REFRESH_EXPIRES:-30d}
+      AI_PROVIDER: ${AI_PROVIDER:-mock}
+      AI_BASE_URL: ${AI_BASE_URL:-https://api.openai.com/v1}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-2000}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0.7}
+      AI_TIMEOUT_MS: ${AI_TIMEOUT_MS:-60000}
+      AI_ENABLE_CACHE: ${AI_ENABLE_CACHE:-true}
+      API_PORT: 3000
+      NODE_ENV: production
+    # Linux 上 host.docker.internal 默认不存在，这行让它可用
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      # 后端启动时会自检 Doris 连接，连不上会退出，
+      # 所以这个健康检查同时也验证了数据库可达
+      test: ['CMD', 'node', '-e', "require('http').get('http://127.0.0.1:3000/api/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: looom-web
+    restart: unless-stopped
+    ports:
+      - '${WEB_DOCKER_PORT:-8080}:80'
+    depends_on:
+      api:
+        condition: service_started

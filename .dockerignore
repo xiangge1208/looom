@@ -1,0 +1,20 @@
+# 构建上下文排除，避免把几百 MB 的无关文件传给 Docker daemon
+node_modules
+**/node_modules
+dist
+**/dist
+.git
+.env
+*.log
+**/*.log
+
+# 侦察素材（14MB 的 chunk + 抓包）不需要进镜像
+docs/raw/_probe
+docs/raw/capture.ndjson
+tools
+
+# 临时文件
+apps/api/*.json
+!apps/api/package.json
+!apps/api/tsconfig.json
+apps/api/*.txt

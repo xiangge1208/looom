@@ -1,0 +1,31 @@
+node_modules/
+.env
+.env.remote
+dist/
+*.log
+
+# =====================================================================
+# 侦察阶段的原站抓取产物 —— 整个目录都不提交
+#
+# docs/raw/ 下是从 www.sif.com 抓下来的东西：
+#   _probe/app.js       1.1MB 原站前端 bundle
+#   _probe/home.html    含原站 title / keywords 等专有文案
+#   _probe/chunks/      分包 JS
+#   capture.ndjson      代理层抓的真实 API 响应（含账号数据）
+#
+# 这些是别人的代码和文案，重新发布是侵权；capture.ndjson 里还有
+# 真实账号的响应数据。侦察结论已经提炼进 docs/LIVE_PROBE.md 等文档，
+# 原始抓取物没有保留在仓库里的必要。
+# =====================================================================
+docs/raw/
+
+# 反向代理工具同样指向原站，只用于本地侦察，不随项目发布
+tools/sif-proxy.mjs
+
+# 浏览器自动化的临时输出
+.playwright-mcp/
+.playwright-cli/
+*.snapshot.txt
+
+# 编辑器/助手的会话临时文件
+.zcode/
