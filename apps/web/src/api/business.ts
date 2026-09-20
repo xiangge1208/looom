@@ -23,6 +23,13 @@ export interface VariantItem {
   /** 销量是分档字符串，如 "200+"、"<50"，不是精确值 */
   boughtLabel: string | null
   boughtLowerBound: number | null
+  /**
+   * 是否为父体行。
+   *
+   * 父体作为第一行出现（对齐原站），但它没有销量和流量占比 ——
+   * 销量只存在于子体。前端要据此区别渲染，不能显示成「销量 0」。
+   */
+  isParent?: boolean
 }
 
 export interface SalesOverview {

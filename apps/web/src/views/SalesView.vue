@@ -157,6 +157,76 @@ const bestFeatureByDim = computed(() => {
 })
 
 /**
+ * 表格排序状态。null 表示用后端返回的原始顺序（display_order）。
+ */
+const sortKey = ref<'price' | 'bought' | 'traffic' | 'score' | null>(null)
+const sortAsc = ref(false)
+
+/** 点表头切换排序：同一列反复点 → 降序 → 升序 → 取消 */
+function toggleSort(key: 'price' | 'bought' | 'traffic' | 'score') {
+  if (sortKey.value !== key) {
+    sortKey.value = key
+    sortAsc.value = false
+    return
+  }
+  if (!sortAsc.value) {
+    sortAsc.value = true
+    return
+  }
+  sortKey.value = null
+}
+
+/**
+ * 排序后的表格行。
+ *
+ * 两条规则：
+ *   1. **父体行永远钉在第一行**，不参与排序 —— 它是这一组的主体，
+ *      被排到中间会让表格读不出父子结构（原站父体也固定在首行）。
+ *   2. 空值一律排在末尾，不论升降序。否则降序时一堆 null 占据顶部，
+ *      有数据的行反而被挤下去。
+ */
+const sortedVariants = computed(() => {
+  const all = overview.value?.variants ?? []
+  const parents = all.filter((v) => v.isParent)
+  const children = all.filter((v) => !v.isParent)
+
+  if (!sortKey.value) return [...parents, ...children]
+
+  const valueOf = (v: (typeof children)[number]): number | null => {
+    switch (sortKey.value) {
+      case 'price':
+        return v.price
+      case 'bought':
+        return v.boughtLowerBound
+      case 'traffic':
+        return v.trafficRatio
+      case 'score':
+        return v.score
+      default:
+        return null
+    }
+  }
+
+  const sorted = [...children].sort((a, b) => {
+    const av = valueOf(a)
+    const bv = valueOf(b)
+    // 空值恒定沉底
+    if (av === null && bv === null) return 0
+    if (av === null) return 1
+    if (bv === null) return -1
+    return sortAsc.value ? av - bv : bv - av
+  })
+
+  return [...parents, ...sorted]
+})
+
+/** 表头排序指示箭头 */
+function sortArrow(key: 'price' | 'bought' | 'traffic' | 'score') {
+  if (sortKey.value !== key) return '↕'
+  return sortAsc.value ? '↑' : '↓'
+}
+
+/**
  * 按维度聚合折线图。
  *
  * variant 维度：每个变体一条线
@@ -313,7 +383,12 @@ const totalBoughtLower = computed(() => {
       <!-- 变体表格。列按 dimensions 动态生成，不写死 Size/Color -->
       <div class="card">
         <h2 class="sec-title">变体明细</h2>
-        <el-table :data="overview.variants" stripe style="width: 100%">
+        <!--
+          row-key 必须给：排序会改变行顺序，没有稳定 key 时 Vue 按索引复用
+          DOM 节点，徽标会残留在错误的行上（实测排序后 5,000+ 的变体也被
+          标成「最畅销变体」，且 BS 徽标重复出现 3 次）。
+        -->
+        <el-table :data="sortedVariants" row-key="asin" stripe style="width: 100%">
           <el-table-column label="图片" width="72">
             <template #default="{ row }">
               <img v-if="row.img" :src="row.img" class="cell-img" alt="" />
@@ -325,12 +400,7 @@ const totalBoughtLower = computed(() => {
               <div class="asin-cell">
                 <div class="asin-line">
                   <span class="mono asin-code">{{ row.asin }}</span>
-                  <el-tag
-                    v-if="row.asin === overview.target.asin && overview.target.isParentAsin"
-                    size="small"
-                    type="info"
-                    effect="plain"
-                  >
+                  <el-tag v-if="row.isParent" size="small" type="info" effect="plain">
                     父体
                   </el-tag>
                   <el-tag v-else size="small" effect="plain">变体</el-tag>
@@ -365,18 +435,33 @@ const totalBoughtLower = computed(() => {
               </div>
             </template>
           </el-table-column>
-          <el-table-column label="价格" width="92">
+          <el-table-column width="100">
+            <template #header>
+              <button type="button" class="sort-th" @click="toggleSort('price')">
+                价格 <span class="sort-ind">{{ sortArrow('price') }}</span>
+              </button>
+            </template>
             <template #default="{ row }">
               <span v-if="row.price !== null">${{ row.price }}</span>
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
-          <el-table-column label="子体近 30 天销量" width="132">
+          <el-table-column width="146">
+            <template #header>
+              <button type="button" class="sort-th" @click="toggleSort('bought')">
+                子体近 30 天销量 <span class="sort-ind">{{ sortArrow('bought') }}</span>
+              </button>
+            </template>
             <template #default="{ row }">
               <div class="sales-cell">
                 <el-tag v-if="row.boughtLabel" size="small" effect="plain">
                   {{ row.boughtLabel }}
                 </el-tag>
+                <!--
+                  父体和「查不到数据」要分开说：父体维度本来就不存在销量，
+                  显示 — 会被读成「没查到」，其实是「不适用」。
+                -->
+                <span v-else-if="row.isParent" class="muted na">不适用</span>
                 <span v-else class="muted">—</span>
                 <!-- 最畅销变体：组内销量分档下界最高的那个 -->
                 <el-tag
@@ -404,11 +489,17 @@ const totalBoughtLower = computed(() => {
               />
             </template>
           </el-table-column>
-          <el-table-column label="流量占比" width="100">
+          <el-table-column width="112">
+            <template #header>
+              <button type="button" class="sort-th" @click="toggleSort('traffic')">
+                流量占比 <span class="sort-ind">{{ sortArrow('traffic') }}</span>
+              </button>
+            </template>
             <template #default="{ row }">
               <span v-if="row.trafficRatio !== null">
                 {{ (row.trafficRatio * 100).toFixed(1) }}%
               </span>
+              <span v-else-if="row.isParent" class="muted na">整组</span>
               <span v-else class="muted">—</span>
             </template>
           </el-table-column>
@@ -591,6 +682,38 @@ const totalBoughtLower = computed(() => {
   flex-direction: column;
   align-items: flex-start;
   gap: 4px;
+}
+
+/* 可排序表头：做成 button 以便键盘可达 */
+.sort-th {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.sort-th:hover {
+  color: var(--brand-500);
+}
+
+.sort-ind {
+  font-size: 10px;
+  opacity: 0.55;
+}
+
+.sort-th:hover .sort-ind {
+  opacity: 1;
+}
+
+/* 「不适用」与「无数据」在视觉上要有区别 */
+.na {
+  font-size: 12px;
+  font-style: italic;
 }
 
 /* 操作列纵向排布，与原站一致；横排在 4 项时会挤成两行且难点中 */

@@ -37,6 +37,25 @@ export class SalesService {
     // 定位变体组的父体：传父体就是自己，传子体则取其 parent_asin
     const parentAsin = target.is_parent_asin ? target.asin : target.parent_asin
 
+    /**
+     * 父体自身的记录。
+     *
+     * ⚠️ 不能直接用 target 当父体行：用户传子体时 target 就是那个子体，
+     * 拿它构造「父体行」会让同一个 ASIN 重复出现两次、还被错标成父体
+     * （实测查 B0SEEDSS02 时就复现了这个问题）。
+     * 所以传子体时要按 parentAsin 单独查一次。
+     */
+    const parentRow =
+      !parentAsin || target.is_parent_asin
+        ? target.is_parent_asin
+          ? target
+          : null
+        : await this.db.queryOne<any>(
+            `SELECT asin, title, img, price, score, star, rating_num, is_best_seller
+               FROM dim_asin WHERE asin = ? AND country = ? LIMIT 1`,
+            [parentAsin, country],
+          )
+
     const variants = parentAsin
       ? await this.db.query<any>(
        `SELECT a.asin, a.title, a.img, a.price, a.score, a.star, a.rating_num,
@@ -101,24 +120,59 @@ export class SalesService {
       /** 变体属性维度名，如 ["Size","Color"]。数量随商品变化，前端不要写死两列 */
       dimensions,
       variantCount: variants.length,
-      variants: variants.map((v: any) => ({
-asin: v.asin,
-     title: v.title,
-        img: v.img,
-        price: v.price === null ? null : Number(v.price),
-        // score 是真实评分(4.8)，star 是半星展示值(5.0)，实测二者并存且含义不同
-      score: v.score === null ? null : Number(v.score),
-     star: v.star === null ? null : Number(v.star),
-      ratingNum: v.rating_num === null ? null : Number(v.rating_num),
-        isBestSeller: !!v.is_best_seller,
-        features: featureMap.get(v.asin) ?? {},
- trafficRatio: v.ratio === null ? null : Number(v.ratio),
-        // 销量是分档字符串，不是精确值
-        boughtLabel: latestMap.get(v.asin)?.bought_label ?? null,
-        boughtLowerBound: latestMap.get(v.asin)
-          ? Number(latestMap.get(v.asin).bought_lower_bound)
-  : null,
-      })),
+      /**
+       * 变体行。
+       *
+       * ⚠️ 当输入/定位到的是父体时，**父体自身也作为一行排在最前**
+       * （对齐原站：第 1 行是父体，其余标「变体」）。
+       *
+       * 父体行的 boughtLabel 恒为 null —— 销量只存在于子体，这是实测结论。
+       * 用 isParent 标识让前端能区别渲染，而不是显示成「销量 0」：
+       * 那会被读成「父体卖了 0 个」，而真相是「父体维度不存在销量这个概念」。
+       */
+      variants: [
+        // 只有当这个变体组确实有父体、且父体不在 variants 里时才插入
+        ...(parentRow && !variants.some((v: any) => v.asin === parentRow.asin)
+          ? [
+              {
+                asin: parentRow.asin,
+                title: parentRow.title,
+                img: parentRow.img,
+                price: parentRow.price === null ? null : Number(parentRow.price),
+                score: parentRow.score === null ? null : Number(parentRow.score),
+                star: parentRow.star === null ? null : Number(parentRow.star),
+                ratingNum:
+                  parentRow.rating_num === null ? null : Number(parentRow.rating_num),
+                isBestSeller: !!parentRow.is_best_seller,
+                features: featureMap.get(parentRow.asin) ?? {},
+                // 父体自身没有独立的流量占比，它就是整组的 100%
+                trafficRatio: null,
+                boughtLabel: null,
+                boughtLowerBound: null,
+                isParent: true,
+              },
+            ]
+          : []),
+        ...variants.map((v: any) => ({
+          asin: v.asin,
+          title: v.title,
+          img: v.img,
+          price: v.price === null ? null : Number(v.price),
+          // score 是真实评分(4.8)，star 是半星展示值(5.0)，实测二者并存且含义不同
+          score: v.score === null ? null : Number(v.score),
+          star: v.star === null ? null : Number(v.star),
+          ratingNum: v.rating_num === null ? null : Number(v.rating_num),
+          isBestSeller: !!v.is_best_seller,
+          features: featureMap.get(v.asin) ?? {},
+          trafficRatio: v.ratio === null ? null : Number(v.ratio),
+          // 销量是分档字符串，不是精确值
+          boughtLabel: latestMap.get(v.asin)?.bought_label ?? null,
+          boughtLowerBound: latestMap.get(v.asin)
+            ? Number(latestMap.get(v.asin).bought_lower_bound)
+            : null,
+          isParent: false,
+        })),
+      ],
     }
   }
 
