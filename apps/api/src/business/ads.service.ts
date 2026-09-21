@@ -17,23 +17,41 @@ import { buildPage, decodeCursor, normalizeLimit } from '../common/cursor'
 export class AdsService {
   constructor(private readonly db: DorisService) {}
 
-  /** 查广告架构：某 ASIN 被哪些广告活动投放 */
+  /**
+   * 查广告架构：某 ASIN 被哪些广告活动投放
+   *
+   * ⚠️ 原实现从 `fact_ad_search_term_exposure` 反查，但那张表**建不起来**：
+   * 它的四元组主键 (encrypt_ad_id, country, keyword_id, variant_asin) 在
+   * keyword_id 上闭合不了 —— 上游 `web-variant-ad-keywords.keywords[]` 只给
+   * 关键词文本、不给 keywordId，回查字典 835 个词仅 15 个可解（1.8%）。
+   * 详见 docs/MODULE_DATA_FLOW.md 模块 7-9。
+   * 表恒为空 → 这个接口恒返回 0 条，页面永远空白。
+   *
+   * 改走 `fact_asin_keyword_snapshot.sp_campaign_id`：它是「该 ASIN 的某个
+   * 流量词由哪个广告活动带来」，能直接给出 ASIN → 活动 的关联，
+   * 实测覆盖 2,661 个 ASIN / 6,352 条关联。
+   *
+   * 代价：只能拿到 SP（商品推广）活动 —— 该列只记 SP 的 campaignId。
+   * 但这是目前唯一闭合的路径，比整页空白强。
+   * involvedAdNum 改成「该活动为本 ASIN 带来多少个流量词」，
+   * totalScore 用这些词的流量得分之和（原先是曝光得分，同样无源）。
+   */
   async listCampaigns(asin: string, country: string) {
-    // 先通过搜索词曝光反查出涉及该 ASIN 的活动
     const rows = await this.db.query<any>(
       `SELECT c.encrypt_campaign_id, c.fake_campaign_id, c.ad_type, c.strategy,
-      c.asin_num, c.ad_num, c.campaign_created_at, c.last_ad_created_at,
-     t.name_cn AS ad_type_name,
-    COUNT(DISTINCT e.encrypt_ad_id) AS involved_ad_num,
-       SUM(e.score) AS total_score
-      FROM fact_ad_search_term_exposure e
-        JOIN dim_ad_campaign c
-        ON c.encrypt_campaign_id = e.encrypt_campaign_id AND c.country = e.country
-   LEFT JOIN dict_ad_type t ON t.code = CAST(c.ad_type AS CHAR)
-        WHERE e.variant_asin = ? AND e.country = ?
-   GROUP BY c.encrypt_campaign_id, c.fake_campaign_id, c.ad_type, c.strategy,
-      c.asin_num, c.ad_num, c.campaign_created_at, c.last_ad_created_at, t.name_cn
-        ORDER BY total_score DESC`,
+              c.asin_num, c.ad_num, c.campaign_created_at, c.last_ad_created_at,
+              t.name_cn AS ad_type_name,
+              COUNT(DISTINCT s.keyword) AS involved_ad_num,
+              SUM(COALESCE(s.listing_score_ratio, 0)) AS total_score
+         FROM fact_asin_keyword_snapshot s
+         JOIN dim_ad_campaign c
+           ON c.encrypt_campaign_id = s.sp_campaign_id AND c.country = s.country
+    LEFT JOIN dict_ad_type t ON t.code = CAST(c.ad_type AS CHAR)
+        WHERE s.asin = ? AND s.country = ? AND s.sp_campaign_id IS NOT NULL
+     GROUP BY c.encrypt_campaign_id, c.fake_campaign_id, c.ad_type, c.strategy,
+              c.asin_num, c.ad_num, c.campaign_created_at, c.last_ad_created_at,
+              t.name_cn
+     ORDER BY total_score DESC`,
       [asin, country],
     )
 
@@ -114,35 +132,48 @@ export class AdsService {
       params.push(opts.campaignId)
     }
 
+    // tie-break 用 keyword 文本：keyword_id 可空，NULL 参与比较会让整行被过滤掉
     const cur = decodeCursor(opts.cursor)
     if (cur && cur.length === 2) {
-      where.push('(e.score < ? OR (e.score = ? AND e.keyword_id < ?))')
+      where.push('(e.score < ? OR (e.score = ? AND e.keyword < ?))')
       params.push(cur[0], cur[0], cur[1])
     }
 
+    /**
+     * ⚠️ 这里必须是 LEFT JOIN，且按 (keyword, country) 关联。
+     *
+     * 原先是 `JOIN dim_keyword ON keyword_id`，有两个致命问题：
+     *   1. 广告搜索词源接口**根本不返回 keywordId**（schema-04:251 已注明），
+     *      真实数据下该列全为 NULL，INNER JOIN 后这个 Tab 恒为空；
+     *   2. keyword_id 跨站点不唯一，不带 country 会串词。
+     * 改成 LEFT JOIN 后，即使 dim_keyword 里还没有这个词（ETL 时序差），
+     * 曝光行本身也不会丢 —— 搜索词文本就在事实表里，不依赖维表。
+     */
     const rows = await this.db.query<any>(
-      `SELECT e.keyword_id, k.keyword, k.translate_keyword, e.encrypt_ad_id,
+      `SELECT e.keyword, e.keyword_id, k.translate_keyword, e.encrypt_ad_id,
      e.encrypt_campaign_id, e.ad_type, e.traffic_type, e.score,
    e.rank_position, e.stat_date, c.name_cn AS traffic_name
       FROM fact_ad_search_term_exposure e
-      JOIN dim_keyword k ON k.keyword_id = e.keyword_id
+      LEFT JOIN dim_keyword k
+        ON k.keyword = e.keyword AND k.country = e.country
       LEFT JOIN dict_traffic_channel c ON c.code = e.traffic_type
  WHERE ${where.join(' AND ')}
-    ORDER BY e.score DESC, e.keyword_id DESC
+    ORDER BY e.score DESC, e.keyword DESC
  LIMIT ${limit + 1}`,
       params,
     )
 
     const page = buildPage(rows, limit, (last: any) => [
       Number(last.score),
-      String(last.keyword_id),
+      String(last.keyword),
     ])
 
     return {
       asin,
       country,
       items: page.items.map((r: any) => ({
-        keywordId: String(r.keyword_id),
+        // 广告源接口不返回 keywordId，真实数据下基本恒为 null
+        keywordId: r.keyword_id === null ? null : String(r.keyword_id),
         searchTerm: r.keyword,
         translateKeyword: r.translate_keyword,
         encryptAdId: r.encrypt_ad_id,

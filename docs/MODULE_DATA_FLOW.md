@@ -10,6 +10,46 @@
 >
 > **PG 源层配色**：🔵 蓝=已结构化表，可直接 SELECT ｜ 🔴 红=仅存于 `sif_api_log.resp` 原始 JSON，ETL 需先解析 ｜ ⬜ 灰=无数据源 ｜ 🟡 黄=字典表，人工初始化非 ETL
 >
+> ---
+>
+> ## ⚠️ 命名约定（先读这段，否则会把 endpoint 当成表名）
+>
+> 本文档出现两类完全不同的东西，**都用等宽字体，但含义不同**：
+>
+> | 写法 | 是什么 | 怎么查 |
+> |---|---|---|
+> | `sif_asin_meta`、`sif_asin_keyword`、`sif_asin_sales_monthly` …（**`sif_` 前缀**） | **PG 真实表**，共 9 张已结构化表 | `SELECT * FROM sif_asin_meta` |
+> | `web-sales-keyword`、`asin-keyword-list`、`traffic-trend` …（**含连字符 `-`**） | **不是表！** 是 `sif_api_log.endpoint` 列的**取值**，共 41 个 | 见下方模板 |
+>
+> **PG 里只有 `sif_api_log` 一张表存原始响应**，41 个接口的响应全在这一张表里，用 `endpoint` 列区分：
+>
+> ```
+> sif_api_log  (57,379 行)
+>  ├── endpoint = 'web-sales-keyword'    ← 2,883 条 ok
+>  ├── endpoint = 'asin-keyword-list'    ← 6,640 条 ok
+>  ├── endpoint = 'keyword-overview'     ← 20,833 条 ok
+>  └── … 共 41 个取值
+> ```
+>
+> 所以文档里写「源 = `web-sales-keyword` → `data.asins[].brand`」，实际 SQL 是：
+>
+> ```sql
+> SELECT l.site AS country,
+>        el->>'asin'  AS asin,
+>        el->>'brand' AS brand
+> FROM sif_api_log l
+> CROSS JOIN LATERAL jsonb_array_elements(
+>   CASE WHEN jsonb_typeof(l.resp->'data'->'asins') = 'array'
+>        THEN l.resp->'data'->'asins' ELSE '[]'::jsonb END) el
+> WHERE l.endpoint = 'web-sales-keyword'   -- ← endpoint 是筛选条件，不是表名
+>   AND l.ok;
+> ```
+>
+> ⚠️ `CASE WHEN jsonb_typeof(...)='array'` 守卫**必须保留**——少了它，遇到非数组的行会直接报
+> `cannot extract elements from a scalar`。
+>
+> 下文凡标注 🟡「需解析 JSON」的源，都是这个模板，把 `endpoint` 值和 JSON 路径换掉即可。
+>
 > **就绪状态口径**（依据 ETL_GAP_ANALYSIS 的实测结论）：
 > - 🟢 **可做** — 所需表全部有数据源，ETL 落地即可查
 > - 🟡 **可做但有缺列** — 主干能出，个别列为空或需降级展示
@@ -49,7 +89,7 @@ flowchart LR
 | # | 模块 | 原站路由 | 就绪 | 一句话卡点 |
 |---|---|---|---|---|
 | 1 | 查销量 | `/Sales` | 🟢 | 分档串 `bought_label` 历史月缺失 |
-| 2 | 查多变体自然位 | `/multi-variants` | 🟢 | **改判**：真源是 `asin-keyword-list.multiNfInfo`（76,469 行明细） |
+| 2 | 查多变体自然位 | `/multi-variants` | 🟢 | **改判**：真源是 `sif_asin_keyword.raw->'multiNfInfo'`（76,469 行明细） |
 | 3 | 查推荐专栏 | `/recommend` | 🟡 | **改判**：专栏名 141 个（非18），钻取表可落 1,002 行；仅逐日曝光无源 |
 | 4 | 查流量结构 | `/search` | 🟡 | 缺 `allSp`/`allSb` 两个聚合渠道 |
 | 5 | 反查流量词 | `/reverse` | 🟡 | `keyword_id` 只覆盖 14.9% |
@@ -82,7 +122,7 @@ flowchart TD
     S3 --> T4
 
     %% ---------- PG 源层 ----------
-    T1 -.->|"解析 variants[]"| G1["sif_api_log<br/>web-asin-variants<br/>387条 ok"]
+    T1 -.->|"解析 variants[]"| G1["sif_api_log<br/>ep=web-asin-variants<br/>387条 ok"]
     T2 -.->|"直接映射"| G2[("sif_asin_meta<br/>6,767行")]
     T3 -.->|"展开 features JSONB"| G3[("sif_asin_sales_monthly<br/>features 650,962行")]
     T4 -.->|"直接映射"| G3
@@ -96,7 +136,7 @@ flowchart TD
 
 | SQL | 用途 | 打的表 | 就绪 | 说明 |
 |---|---|---|---|---|
-| SQL1 | 变体列表（图片/ASIN/价格/Size） | `rel_asin_variant` + `dim_asin` + `dim_asin_feature` | 🟡 | `brand`/`brand_href`/`first_available_day` **需解析 `web-sales-keyword`**（41% 可得）；仅 `is_best_seller` 确证无源 |
+| SQL1 | 变体列表（图片/ASIN/价格/Size） | `rel_asin_variant` + `dim_asin` + `dim_asin_feature` | 🟡 | `brand`/`brand_href`/`first_available_day` 需解析 `sif_api_log`[ep=`web-sales-keyword`]（41.6% 可得，且 09-16 后新抓的基本全有） |
 | SQL2 | 月销量趋势迷你图 | `fact_asin_bought_monthly` | 🟢 | 768,319 行，2023-05~2026-08 |
 | SQL3 | 子体近 30 天销量 | `dim_asin.bought_past_month` | 🟡 | 分档串被洗成纯数字（`50` 而非 `50+`） |
 
@@ -104,7 +144,7 @@ flowchart TD
 
 **PG → Doris 字段级映射**
 
-### `dim_asin` ← `sif_asin_meta` + `web-sales-keyword`（未解析）
+### `dim_asin` ← 表 `sif_asin_meta` + `sif_api_log`[`endpoint='web-sales-keyword'`]
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测填充率 |
 |---|---|---|---|---|
@@ -116,14 +156,14 @@ flowchart TD
 | `score` | double | `.score` | ✅ 直接 | 89.2% |
 | `star` | double | `.star` | ✅ 直接 | 89.2% |
 | `rating_num` | bigint | `.rating_num` | ✅ 直接 | 89.2% |
-| **`brand`** | varchar | 🟡 `web-sales-keyword` → `data.asins[].brand` | 解析 JSON | **41.0%**（14,768 ASIN） |
+| **`brand`** | varchar | 🟡 `sif_api_log`[ep=`web-sales-keyword`] → `resp.data.asins[].brand` | 解析 JSON | **41.6%**（20,542/49,405 元素） |
 | **`brand_href`** | varchar | 🟡 同上 `.brandHref` | 解析 JSON | **40.6%** |
 | **`first_available_day`** | date | 🟡 同上 `.firstAvailableDay` | 解析 JSON，格式已是 `YYYY-MM-DD` | **40.8%** |
 | **`data_updated_at`** | datetime | 🟡 同上 `.snapshotUpdateTime` | 解析 JSON | **41.1%** |
 | **`seller`** | varchar | 🟡 `sif_asin_traffic_daily.buybox_seller` | 取最新一天 | **86.2%** |
-| **`is_parent_asin`** | tinyint | 🟡 `web-sales-asin` → `data.isParentAsin` | 解析 JSON | 639 条响应，**仅 4 条为 true** |
+| **`is_parent_asin`** | tinyint | 🟡 `sif_api_log`[ep=`web-sales-asin`] → `resp.data.isParentAsin` | 解析 JSON | 639 条响应，**仅 4 条为 true** |
 | `parent_asin` | varchar | ⚙️ 由 `rel_asin_variant` 反向推导 | 见下 | — |
-| **`is_best_seller`** | tinyint | 🟡 **改判：有源** `web-asin-variants` → `data.variants[].isBestSeller` | 解析 JSON | **11,164/12,988 非空（86.0%）**，覆盖 10,866 ASIN，其中 597 个为 true |
+| **`is_best_seller`** | tinyint | 🟡 **改判：有源** `sif_api_log`[ep=`web-asin-variants`] → `resp.data.variants[].isBestSeller` | 解析 JSON | **11,164/12,988 非空（86.0%）**，覆盖 10,866 ASIN，其中 597 个为 true |
 | `created_at`/`updated_at` | datetime | ⚙️ ETL 写入时间 | `now()` | — |
 
 > ## ⏰ 41% 不是稀疏，是上游 2026-09-16 才加的新字段（按天实测）
@@ -176,7 +216,7 @@ flowchart TD
 > | `ac` | 93.7% | 同上 |
 > | `features[]` | 16,296 行 | ⚠️ **裸字符串无维度名**，填不了 `feature_name`（同 `web-asin-variants` 的局限） |
 
-### `dim_asin_feature` ← `sif_asin_sales_monthly.features`
+### `dim_asin_feature` ← 表 `sif_asin_sales_monthly.features`
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测 |
 |---|---|---|---|---|
@@ -191,7 +231,7 @@ flowchart TD
 > `listing-summary.features` 同样缺维度名且只覆盖 881 个 ASIN。
 > ⚠️ ER 文档注释说「需按下标 zip 对齐父子 features」，**实测 PG 数据已 zip 好**，无需对齐。
 
-### `fact_asin_bought_monthly` ← `sif_asin_sales_monthly`
+### `fact_asin_bought_monthly` ← 表 `sif_asin_sales_monthly`
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测 |
 |---|---|---|---|---|
@@ -202,7 +242,7 @@ flowchart TD
 | **`bought_label`** | varchar | 🔴 历史月无源 | 仅当月可从 `sif_asin_meta.bought_past_month` 回填 | 40.2% 且**格式已被洗成纯数字** |
 | `created_at` | datetime | ⚙️ `now()` | — | — |
 
-### `rel_asin_variant` ← `sif_api_log` (`web-asin-variants`)
+### `rel_asin_variant` ← `sif_api_log`[`endpoint='web-asin-variants'`]
 
 | Doris 列 | 类型 | PG 来源（JSON 路径） | 方式 | 实测 |
 |---|---|---|---|---|
@@ -240,12 +280,12 @@ flowchart TD
     S3 --> T5[("rel_asin_variant")]
 
     %% ---------- PG 源层 ----------
-    T1 -.->|"A路: dates/asinCntList 仅21ASIN"| G1["sif_api_log<br/>web-asin-day-trend<br/>26 条"]
-    T1 -.->|"B路: 聚合 1797 ASIN"| GM["sif_api_log<br/>asin-keyword-list<br/>multiNfInfo 76,469行明细"]
+    T1 -.->|"A路: dates/asinCntList 仅21ASIN"| G1["sif_api_log<br/>ep=web-asin-day-trend<br/>26 条"]
+    T1 -.->|"B路: 聚合 1797 ASIN"| GM["sif_asin_keyword.raw<br/>-&gt;multiNfInfo<br/>76,469行明细"]
     T2 -.->|"聚合 avg_rank/appear_days"| GM
     T3 -.->|"keyword_id 100%"| G2[("sif_asin_keyword<br/>18,331行")]
     T4 -.->|"展开 dateAsins[].asins[]"| GM
-    T5 -.->|"解析 variants[]"| G3["sif_api_log<br/>web-asin-variants<br/>387条 ok"]
+    T5 -.->|"解析 variants[]"| G3["sif_api_log<br/>ep=web-asin-variants<br/>387条 ok"]
 
     style GM fill:#2a4a2a,stroke:#6c6
     style G1 fill:#4a2a2a,stroke:#c66
@@ -274,7 +314,9 @@ flowchart TD
 
 **PG → Doris 字段级映射**
 
-### `fact_asin_multinf_keyword_variant` ← `asin-keyword-list.multiNfInfo`（数据最厚）
+### `fact_asin_multinf_keyword_variant` ← `sif_api_log`[`endpoint='asin-keyword-list'`] → `resp.data.list[].multiNfInfo`（数据最厚）
+
+> 也可走已结构化表 `sif_asin_keyword.raw->'multiNfInfo'`（同一份数据，已落库，**推荐用这个**，省一层 JSON 解析）。
 
 | Doris 列 | 类型 | PG 来源（JSON 路径） | 方式 | 实测 |
 |---|---|---|---|---|
@@ -311,9 +353,9 @@ flowchart TD
 
 **可落 4,325 行**。4 个指标列全是 ETL 自算，非站点原值。
 
-### `fact_asin_multinf_daily` ← 两路源，需决策
+### `fact_asin_multinf_daily` ← 两路源，需决策（A/B 均为 `sif_api_log` 的不同 endpoint）
 
-| Doris 列 | 源 A：`web-asin-day-trend`（21 ASIN） | 源 B：`asin-keyword-list` 聚合（1,797 ASIN） |
+| Doris 列 | 源 A：`sif_api_log`[ep=`web-asin-day-trend`]（21 ASIN） | 源 B：`sif_asin_keyword.raw->'multiNfInfo'` 聚合（1,797 ASIN） |
 |---|---|---|
 | `stat_date` | `data.dates[]` | `dateAsins[].date` ✅ **推荐** |
 | `asin_cnt` | `asinCntList[].value`（**抽样全为 0**） | `count(distinct asin)` ✅ |
@@ -357,7 +399,7 @@ flowchart TD
     T1 -.->|"四源并集取对象键"| G1["raw.allRankHistory.recRanks 119<br/>+ flow-overview 33 + rank-history 25<br/>+ change_reasons 15 = 并集 141"]
     T2 -.->|"❌ 无逐日曝光数据"| GX1["无源"]
     T3 -.->|"❌ 无三层钻取关系"| GX2["无源"]
-    T4 -.->|"仅 ID 无属性"| G2["sif_api_log<br/>web-variant-ad-keywords<br/>13条 ok（11.8%）"]
+    T4 -.->|"仅 ID 无属性"| G2["sif_api_log<br/>ep=web-variant-ad-keywords<br/>13条 ok（11.8%）"]
     T5 -.->|"keyword_id 仅 14.9%"| G3[("sif_asin_keyword")]
 
     style G1 fill:#4a2a2a,stroke:#c66
@@ -477,7 +519,7 @@ flowchart TD
     T2 -.->|"人工初始化"| GD["字典，非 ETL"]
     T3 -.->|"price/star/review/bsr"| G1
     T4 -.->|"展开 sub_bsr JSONB"| G1
-    T5 -.->|"解析 8个 *KeywordCnt"| G2["sif_api_log<br/>web-asin-keyword-overview<br/>424条 ok（75.3%）"]
+    T5 -.->|"解析 8个 *KeywordCnt"| G2["sif_api_log<br/>ep=web-asin-keyword-overview<br/>424条 ok（75.3%）"]
 
     style G1 fill:#2a3a4a,stroke:#69c
     style G2 fill:#4a2a2a,stroke:#c66
@@ -486,7 +528,7 @@ flowchart TD
 
 **PG → Doris 字段级映射**
 
-### `fact_asin_traffic_channel` ← `sif_asin_traffic_daily`（宽表转长表）
+### `fact_asin_traffic_channel` ← 表 `sif_asin_traffic_daily`（宽表转长表）
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测填充率 |
 |---|---|---|---|---|
@@ -524,7 +566,7 @@ flowchart TD
 > 注意它给的是**关键词计数**不是流量得分——若 `fact_asin_traffic_channel.score` 需要得分，
 > 则 `allSp`/`allSb` 的得分仍无源，只能落计数到 `fact_asin_keyword_overview`。
 
-### `fact_asin_listing_snapshot` ← `sif_asin_traffic_daily`（本表无无源列）
+### `fact_asin_listing_snapshot` ← 表 `sif_asin_traffic_daily`（本表无无源列）
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测填充率 |
 |---|---|---|---|---|
@@ -539,7 +581,7 @@ flowchart TD
 > `price` 有 4 个候选源，**`ld_price` 实测 0% 整列为空**，直接弃用。
 > **聚合口径**：`rating_num` 是累计评价数，**取月均在业务上是错的**，应取月内最后一个非空日。
 
-### `fact_asin_subbsr_snapshot` ← `sif_asin_traffic_daily.sub_bsr`（本表无无源列）
+### `fact_asin_subbsr_snapshot` ← 表 `sif_asin_traffic_daily.sub_bsr`（本表无无源列）
 
 `sub_bsr` 实测是**单层扁平对象** `{"Bracelets": 248}`，100% 是 object、value 100% 是整数。
 
@@ -560,7 +602,7 @@ WHERE sub_bsr IS NOT NULL
 > 有 **63,021 行** `sub_bsr` 有值但主表 `bsr` 为 NULL——两者独立，别用主 `bsr` 做过滤。
 > `cat_name` 上游有截断脏值（`Toys & Game`、`Home & Kitche` 被砍尾），**保持原样不要修**，否则与上游对不上。
 
-### `fact_asin_keyword_overview` ← `web-asin-keyword-overview`（🟢 源比预期完整）
+### `fact_asin_keyword_overview` ← `sif_api_log`[`endpoint='web-asin-keyword-overview'`]（🟢 源比预期完整）
 
 实测 **8 个渠道 × 4 个指标全部 405/405 = 100% 非空**（全表聚合）：
 
@@ -616,7 +658,7 @@ flowchart TD
     T1 -.->|"直接映射（无时间列）"| G1[("sif_asin_keyword<br/>18,331行")]
     T2 -.->|"唯一 keyword_id 来源"| G1
     T3 -.->|"需展开 raw 列<br/>9个 *ScoreInfo"| G1
-    T4 -.->|"解析 allRankHistory"| G2["sif_api_log<br/>core 272 + head 245 条"]
+    T4 -.->|"解析 allRankHistory"| G2["sif_api_log<br/>ep=web-asin-core/head-keywords<br/>272+245 条"]
     T5 -.->|"直接映射"| G3[("sif_keyword_overview<br/>21,076行")]
     T6 -.->|"直接映射"| G4[("sif_keyword_aba_trend<br/>126,529行")]
 
@@ -635,7 +677,7 @@ flowchart TD
 
 **PG → Doris 字段级映射**
 
-### `dim_keyword` ← `sif_asin_keyword`（全库唯一 keyword_id 源）
+### `dim_keyword` ← 表 `sif_asin_keyword`（全库唯一 keyword_id 源）
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测填充率 |
 |---|---|---|---|---|
@@ -649,7 +691,7 @@ flowchart TD
 > `sif_keyword_overview.est_searches_num` 填充 100% 但 keyword_id 反查率仅 15.14%；
 > 而 `monthSearchVolume` 填充 75.8% 且**同行自带 keyword_id**。建议 `COALESCE` 两者。
 
-### `fact_asin_keyword_snapshot` ← `sif_asin_keyword`
+### `fact_asin_keyword_snapshot` ← 表 `sif_asin_keyword`
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测填充率 |
 |---|---|---|---|---|
@@ -745,7 +787,7 @@ flowchart TD
 > Doris 现存 1,275 行 = 255×5 channel 是 seed 构造数据（ASIN 前缀 `B0SEED`），不能当可行性依据。
 > **两条出路**：砍掉 `channel` 维度退化为单行，或找能返回「关键词×渠道」得分的上游接口。
 
-### `fact_keyword_rank_history` ← `sif_asin_keyword.raw->'allRankHistory'`（**源改判**）
+### `fact_keyword_rank_history` ← 表 `sif_asin_keyword.raw->'allRankHistory'`（**源改判**）
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测 |
 |---|---|---|---|---|
@@ -795,7 +837,7 @@ flowchart TD
 > 3. `sb`/`sbv` 元素独有 `asinOrder`(100%)、`campaignId`(100%)、`maskCampaignId`(100%) 三字段，本表无承接列
 >    （注意 `nfRank` 的这三个字段 92,824 个元素**全为 NULL**——自然位无广告活动，语义正常）
 
-### `fact_keyword_metric_snapshot` ← `sif_keyword_overview`
+### `fact_keyword_metric_snapshot` ← 表 `sif_keyword_overview`
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测填充率 |
 |---|---|---|---|---|
@@ -805,8 +847,8 @@ flowchart TD
 | `stat_date` | date | `.aba_date` | ✅ 直接 | 100%（7 个周期） |
 | `est_searches_num` | bigint | `.est_searches_num` | ✅ 直接 | **100%** |
 | `searches_rank` | bigint | `.searches_rank` | ⚙️ int→bigint | 100% |
-| `cpc_bid` | decimal(12,2) | 🟡 `web-keyword-conversion.cpc` | **object 需投影** | 见下 |
-| `click_purchase_ratio` | double | 🟡 同上 `clickPurchaseRatio` | ✅ 可直接映射 | 9,038 元素 **100%** |
+| `cpc_bid` | decimal(12,2) | 🟡 `sif_api_log`[ep=`web-keyword-conversion`] → `resp.data.keywords[].cpc` | **object 需投影** | 见下 |
+| `click_purchase_ratio` | double | 🟡 同上 → `…keywords[].clickPurchaseRatio` | ✅ 可直接映射 | 9,038 元素 **100%** |
 
 > ⚠️ **修正我此前的说法**：我写「`cpc_bid`/`click_purchase_ratio` 无源」——**不准确**。
 > 实测 `web-keyword-conversion`(357) 和 `web-keyword-extend`(313) 都有。但两个障碍：
@@ -905,7 +947,7 @@ flowchart TD
 
 **PG → Doris 字段级映射**
 
-### `fact_asin_op_event` ← `sif_asin_traffic_daily`（⚙️ 唯一需加工的表）
+### `fact_asin_op_event` ← 表 `sif_asin_traffic_daily`（⚙️ 唯一需加工的表）
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测 |
 |---|---|---|---|---|
@@ -946,7 +988,7 @@ flowchart TD
 > - **`LISTING` 分支的 4 个字段是全新发现**（`asin`/`img`/`contriChange`/`contriChangeRatio`），
 >   是**唯一的变体级贡献度归因来源**，Doris 43 张表**零承接**。虽然只有 182 个元素（3.4% 行），但信息不可替代
 
-### `fact_asin_keyword_inout` ← `sif_asin_traffic_change`
+### `fact_asin_keyword_inout` ← 表 `sif_asin_traffic_change`
 
 | Doris 列 | 类型 | PG 来源 | 方式 | 实测填充率 |
 |---|---|---|---|---|
@@ -1010,8 +1052,8 @@ flowchart TD
     S3 --> T5[("dim_keyword")]
 
     %% ---------- PG 源层 ----------
-    T1 -.->|"仅 ID，属性全缺"| G1["sif_api_log<br/>web-variant-ad-keywords<br/>13条 ok（11.8%）"]
-    T1 -.->|"fake_campaign_id<br/>← maskCampaignId"| G2["sif_api_log<br/>core/head-keywords<br/>spRank[] 239个ID"]
+    T1 -.->|"仅 ID，属性全缺"| G1["sif_api_log<br/>ep=web-variant-ad-keywords<br/>13条 ok（11.8%）"]
+    T1 -.->|"fake_campaign_id<br/>← maskCampaignId"| G2["sif_api_log<br/>ep=web-asin-core/head-keywords<br/>spRank[] 239个ID"]
     T2 -.->|"仅 13 条响应可配对"| G1
     T3 -.->|"adIds[] 仅 82 个"| G1
     T4 -.->|"❌ 四元组凑不齐"| GX["无源"]
@@ -1105,6 +1147,182 @@ flowchart TD
 >
 > 注意 `sif_asin_traffic_daily.ad_id` **整列为空不是爬虫 bug**：上游 `traffic-trend` 响应确实有 `adId` 键
 > （2,442 条），但**数组元素全为 null**；同期 `campaignId` 有 2,270 条含真值。对比证明爬虫解析正确，是上游不给。
+
+---
+
+## ETL 落地实况（2026-09-21 全量实灌完成）
+
+> 本节记录**实际灌进 Doris 的行数**，与上文「源可用性分析」区分开：
+> 上文回答「有没有源」，本节回答「现在库里有多少」。
+>
+> **全库 58 张表，51 张有数据，总计 3,358,160 行。** 空表 7 张，
+> 其中 3 张是应用侧表（`api_keys` / `user_favorites` / `sys_user_ad_note`），
+> 4 张确证无源（见下）。
+
+| 模块 | 表 | 行数 | 脚本 |
+|---|---|---:|---|
+| M1 | `dim_asin` | 59,912 | `etl_module1_sales.py` + `sif_load_to_doris.mjs` |
+| M1 | `dim_asin_feature` | 43,716 | 同上 |
+| M1 | `fact_asin_bought_monthly` | 809,553 | 同上 |
+| M1 | `rel_asin_variant` | 12,731 | 同上 |
+| **M2** | `fact_asin_multinf_keyword_variant` | **14,935** | `etl_module2_multinf.py` |
+| **M2** | `fact_asin_multinf_keyword` | **4,453** | 同上 |
+| **M2** | `fact_asin_multinf_daily` | **10,911** | 同上（走 B 路，见下） |
+| **M3** | `dim_recommend_column` | **143** | `etl_module3_reccolumn.py` |
+| **M3** | `rel_rec_column_campaign_keyword` | **9,086** | 同上 |
+| M3 | `fact_asin_rec_column_period` | 64 | 既有（3 列无源，未扩灌） |
+| **M4** | `fact_asin_traffic_channel` | **149,460** | `etl_module4_traffic.py` |
+| **M4** | `fact_asin_listing_snapshot` | **51,880** | 同上 |
+| **M4** | `fact_asin_subbsr_snapshot` | **1,654,767** | 同上（日粒度不聚合） |
+| **M4** | `fact_asin_keyword_overview` | **3,713** | 同上 |
+| **M5** | `dim_keyword` | **13,070** | `etl_module5_keywords.py` |
+| **M5** | `fact_asin_keyword_snapshot` | **19,095** | 同上（4,990 ASIN） |
+| **M5** | `fact_asin_keyword_score` | **19,095** | 同上（仅 `total` 渠道） |
+| **M5b** | `fact_keyword_metric_snapshot` | **22,320** | `etl_module5b_keyword_metrics.py` |
+| **M5b** | `fact_keyword_search_trend` | **178,046** | 同上 |
+| **M5b** | `fact_keyword_rank_history` | **117,740** | 同上 |
+| M5 | `fact_keyword_competition_snapshot` | 21,328 | 既有 |
+| M5 | `fact_keyword_conversion_funnel` | 5,875 | 既有 |
+| **M6** | `fact_asin_op_event` | **73,602** | `etl_module6_timemachine.py`（相邻日 diff） |
+| **M6** | `fact_asin_keyword_inout` | **8,912** | 同上 |
+| **M7-9** | `dim_ad_campaign` | **5,897** | `etl_module789_ads.py` |
+| **M7-9** | `dim_ad_product_ad` | **313** | 同上 |
+| **M7-9** | `rel_ad_campaign_product_ad` | **123** | 同上 |
+| 其他 | `rel_keyword_top_asin` | **56,795**（top 46,451 + conv 10,344） | `etl_keyword_top_asin.py` + `etl_module13_wordpick.py` |
+| 其他 | `dim_festival` | 156 | 既有 |
+
+**4 张确证无源的表（不是没做，是做不了）**
+
+| 表 | 为什么做不了 |
+|---|---|
+| `fact_ad_search_term_exposure` | 四元组主键在 `keyword_id` 上闭合不了：`web-variant-ad-keywords.keywords[]` 只给文本不给 ID，回查字典 835 词仅 15 可解（1.8%） |
+| `rel_keyword_group` | 唯一候选源 `web-keyword-extend` 实测返回的是 **CPC 竞价数据**（`cpc.autoForSales_broad[].median`），没有 `group_id` |
+| `fact_word_frequency` | 同上，该源无词根/词频结构 |
+| `rel_asin_keyword_variant_exposure` | `asins-search-exposure` 实测 `history` / `exposureRatioScore` 全为 null，且无关键词与变体维度 |
+
+### ⚠️ 实灌过程中发现的两处文档错误（已修正实现）
+
+**1. `sif_asin_traffic_daily.campaign_id` 不是 campaignId，是活动「数量」**
+
+上文「广告域 ID 可得量汇总」把它列为 campaignId 的第四个源（34 个 distinct）。
+实测该列 **24,518 行 100% 是纯数字、取值范围 1~82**，而真实 campaignId 形如
+`A08351851QIAUO9ZFHZF0`（20 位）或 `200000626476241`（13~15 位纯数字）。
+把 `'1'`、`'17'` 当加密 ID 灌进 `dim_ad_campaign` 会造出垃圾主键。
+
+同源的 `ad_id` 列实测整列为空（0 distinct）。这一路已从 ETL 中移除。
+
+它在 `fact_asin_op_event` 里的正确语义是「在投广告活动数变化」，
+故 `event_type` 用 `campaignCnt`（新增进字典）而不是既有的 `campaignId`（那个是「新增广告活动」）。
+标错会让页面把「2 → 1」读成活动 ID 从 2 改成 1。
+
+**2. 清理假 campaignId 不能按「纯数字」判定**
+
+我第一版用 `^[0-9]+$` 清理，**误删了 1,353 条真实活动** ——
+实测 `allRankHistory` 里有 1,284 个纯数字 campaignId 是真 ID（SB/SBV 广告就用数字 ID）。
+正确判据是**长度 ≥ 10**：真 ID 最短 13 位，垃圾是 1~2 位的活动数量。
+
+### ⚠️ 另修复一处既有数据错误：`dim_asin.score` 存的是流量得分
+
+实测 **4,078 行 `score > 5`**（最大 64.08，评分上限是 5），而同行 `star`
+正常为 4.5 —— 说明取错了字段。根因：`web-asin-variants` 的变体元素有两个相似字段，
+`score` 是**流量得分**（27.78 / 64.08 / 647037 量级），`asinScore` 才是**真实评分**（4.6）。
+该接口 9,709 个元素里 6,964 个 `score > 5`，是系统性取错而非个别脏数据。
+
+已用 `scripts/fix_dim_asin_score.py` 从 `asinScore` 回填：4,050 行修正，
+28 行（PG 里也没有评分）置 NULL 而非留假值。复核 `score>5` 剩 0 行，
+且 `title` 非空数保持 56,523 不变 —— 合并写回没丢其他字段。
+
+### 两处因数据落地而改的后端查询
+
+**1. `ads.service.listCampaigns` 原先查一张永远为空的表**
+
+它从 `fact_ad_search_term_exposure` 反查活动，而那张表主键闭合不了、恒为空
+→ 接口恒返回 0 条，「查广告架构」页永远空白。
+改走 `fact_asin_keyword_snapshot.sp_campaign_id`（实测覆盖 2,661 ASIN / 6,352 条关联）。
+代价：只能拿到 SP 活动（该列只记 SP 的 campaignId），但这是目前唯一闭合的路径。
+
+**2. `insights.getRecommendColumns` 加了回落**
+
+`fact_asin_rec_column_period` 只有 8 个 ASIN 且 3 列无源，绝大多数 ASIN 查出来是空。
+查不到时改用 `rel_rec_column_campaign_keyword`（9,086 行 / 2,026 ASIN），
+它回答不了「占比随时间怎么变」，但能回答「出现在哪些专栏、各由哪些活动和关键词带来」。
+此口径下 **`ratio` 明确留 null**（附 `ratioAvailable: false`），让前端显示「—」而不是
+0% —— 0% 会被读成「没有流量」。
+
+### 三个必须知道的口径决策（已固化进脚本）
+
+**1. 月内聚合：渠道用统一锚点日，Listing 指标各列独立**
+
+`fact_asin_traffic_channel` 的各渠道**必须取同一天**。实测若让各渠道各取「自己最后
+一个非空日」，会出现同月 `total` 取 09-18（0.065）而 `sp` 取 09-17（8.25）——
+**子渠道大于总量**，页面按「渠道/合计」算占比得出 0.0077（应接近 1.0）。
+锚点取 `total_score` 非空的最后一日。已验证全表 **0 行**违反「子渠道 ≤ total」，
+`score_ratio` 全部落在 [0, 1]。
+
+反之 `fact_asin_listing_snapshot` 的 price/star/review/bsr **各列取自己的最后非空日**：
+它们彼此独立、无加总约束，而填充率差异大（price 86%、bsr 85%），
+强行绑同一天会丢掉大量本来有值的格子。
+
+**2. M5 的时间片主键由 `piece_max_time` 推导**
+
+文档上文指出 `time_piece_type/value/is_listing_search` 在 PG 覆盖率仅 1.39%/1.39%/0.76%，
+要求「按抓取批次赋常量」。实际改用 `piece_max_time`（100% 填充）推导月份 ——
+实测只落在 2026-08 / 2026-09 两个月，比赋死常量更有依据，也让不同批次能按月区分
+而不是全挤进一个键互相覆盖。`is_listing_search` 无源，统一取 0。
+
+**3. `fact_asin_keyword_score` 只落 `total`，不伪造分渠道**
+
+上文两处改判分别指出：`sif_asin_keyword_diagnose.p_change_reason` 有分渠道数据但是
+**排名/频次**不是得分；`web-traffic-diagnose.extraData` 有真正的分渠道得分但是
+**ASIN 级**不是关键词级。两者都填不进「ASIN×关键词×渠道」三维表 ——
+硬填会让同一列混入三种语义。故只落 `channel='total'`，**等业务裁决**。
+
+同理 `is_core` 留 0：上游只吐 `isMainKw`（探针 ASIN 4/4 全带），
+把它当核心词会让筛选全选中、失去区分度。
+
+### 渠道码归一（三处，漏一处页面就显示原始码）
+
+| 上游写法 | 出现位置 | Doris 规范值 |
+|---|---|---|
+| `rec_sp_score` | PG 列名 | `spRec` |
+| `recSpScore` | `traffic-trend` 字段名 | `spRec` |
+| `recSp` | `exposure_positions` 数组值、`recSpKeywordCnt` | `spRec` |
+
+已验证 `fact_asin_keyword_snapshot.exposure_positions` 里 **0 行**残留 `recSp`。
+
+### 全库不变式复核（每次 ETL 后都应重跑）
+
+| 检查项 | 结果 |
+|---|---|
+| 子渠道 score > 同组 total | **0** |
+| `score_ratio` 越界 [0,1] | **0** |
+| `fact_asin_listing_snapshot.score > 5` | **0** |
+| `dim_asin.score > 5` | **0**（修复前 4,078） |
+| `exposure_positions` 残留 `recSp` | **0** |
+| `dim_ad_campaign` 短 ID（< 10 位） | **0** |
+| `fact_asin_op_event` 孤儿 `event_type` | **0** |
+| `fact_asin_traffic_channel` 孤儿渠道码 | **0** |
+| `fact_asin_subbsr_snapshot` 主键唯一 | 1,654,767 / 1,654,767 ✓ |
+
+### 接口烟测（11 个业务端点全部 200 且有数据）
+
+| 端点 | 探针 ASIN | 返回 |
+|---|---|---|
+| `sales/overview` | `B0FVNPKGJ8` | 390 变体 / 3 维度 |
+| `sales/trend` | 同上 | 13 月 × 390 序列 |
+| `traffic/structure` | `B07V2F9DTV` | 自然 63.2% + 广告 36.8%，4 项广告细分 |
+| `traffic/variants` | 同上 | 1 行 |
+| `keywords` | `B0BXSXHBGZ` | 9 词，带中文翻译与曝光位 |
+| `timeline` | `B07V2F9DTV` | 45 月 / **54 条运营事件** |
+| `recommendations` | `B0FCFJ8477` | **9 个专栏** |
+| `variations` | `B0FVNPKGJ8` | 7 日 × 4 指标 |
+| `ads/campaigns` | `B0BKL68RJZ` | **5 个 SP 活动** |
+| `diagnosis` | `B07V2F9DTV` | 5 域，缺 2 域 |
+| `competitors` | 2 个 ASIN | 2 行 |
+
+> ⚠️ **换 ASIN 会看到空页面，这不是 bug**：各源覆盖的 ASIN 集合不同
+> （PG `sif_asin_traffic_daily` 只有 2,452 个 ASIN，而 `dim_asin` 有 59,912 个）。
+> 上表的探针 ASIN 是按「该表有数据」挑的，验证功能时应照用。
 
 ---
 

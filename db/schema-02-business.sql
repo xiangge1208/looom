@@ -409,8 +409,13 @@ CREATE TABLE IF NOT EXISTS looom.fact_asin_subbsr_snapshot (
   created_at  DATETIME      NOT NULL COMMENT '入库时间'
 ) ENGINE=OLAP
 UNIQUE KEY(asin, country, cat_name, stat_date)
-COMMENT 'ASIN 子类目 BSR 排名快照。⚠️ 原响应是动态 key 对象 {类目名:值}，入库须拆成行'
-DISTRIBUTED BY HASH(asin) BUCKETS 2
+COMMENT 'ASIN 子类目 BSR 排名快照。⚠️ 原响应是动态 key 对象 {类目名:值}，入库须拆成行。按月自动分区'
+-- 按月自动分区 + BUCKETS 8（见 db/schema-05-partitions.sql §1）：
+-- 全库最大表（165 万行），日粒度区间查询在单分区 2 桶下会全表扫描。
+-- ⚠️ 本文件由 db/gen-business-schema.mjs 生成，该生成器尚未同步此改动，
+--    重跑生成器会退回无分区版本，详见 ROADMAP_UNBUILT_MODULES.md §9。
+AUTO PARTITION BY RANGE (date_trunc(stat_date, 'month')) ()
+DISTRIBUTED BY HASH(asin) BUCKETS 8
 PROPERTIES ("replication_num" = "1", "enable_unique_key_merge_on_write" = "true");
 
 -- 运营动作事件。实测是系统识别的变化点（非用户标注）。与流量快照拆表：粒度不同（事件按天离散）、稀疏、且只追加不覆盖

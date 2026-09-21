@@ -183,10 +183,14 @@ CREATE TABLE looom.fact_keyword_rank_history (
   asin_order        INT           NULL     COMMENT '同位次内序号。实测 sb/sbv 100% 非空，nf/sp 100% NULL',
   campaign_id       VARCHAR(64)   NULL     COMMENT '广告活动 ID。实测 sp/sb/sbv 有值，nf 恒 NULL',
   mask_campaign_id  VARCHAR(16)   NULL     COMMENT '前台 4 位短码（源 maskCampaignId）',
-  created_at        DATETIME      NOT NULL COMMENT '入库时间'
+  created_at        DATETIME      NOT NULL COMMENT '入库时间',
+  INDEX idx_rank_kw (keyword) USING INVERTED
 ) ENGINE=OLAP
 UNIQUE KEY(asin, country, keyword, rank_type, stat_date)
-COMMENT 'ASIN×关键词 排名历史（日粒度）。主源 sif_asin_keyword.raw->allRankHistory，92,824 个 nf 元素'
+COMMENT 'ASIN×关键词 排名历史（日粒度）。主源 sif_asin_keyword.raw->allRankHistory，92,824 个 nf 元素。按月自动分区'
+-- 按月自动分区（见 db/schema-05-partitions.sql §1.4）：M14 每日排名是日粒度
+-- 区间查询，单分区会全表扫描。列定义须与 schema-05 保持一致。
+AUTO PARTITION BY RANGE (date_trunc(stat_date, 'month')) ()
 DISTRIBUTED BY HASH(asin) BUCKETS 4
 PROPERTIES ("replication_num" = "1", "enable_unique_key_merge_on_write" = "true");
 

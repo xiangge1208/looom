@@ -53,14 +53,12 @@ import psycopg2
 import psycopg2.extras
 import pymysql
 
+# 数据库凭据从环境变量读取，不硬编码 —— 见 scripts/_dsn.py
+from _dsn import pg_dsn, doris_dsn
+
 # --------------------------------------------------------------------------
 # 连接配置
 # --------------------------------------------------------------------------
-PG_DSN = dict(host='120.76.216.136', port=15432, dbname='amazon_data',
-              user='xiezhiyang', password='***REMOVED-PG-PASSWORD***')
-DORIS_DSN = dict(host='120.24.248.175', port=9030, user='etl_user',
-                 password='***REMOVED-DORIS-PASSWORD***', database='looom',
-                 charset='utf8mb4', autocommit=False)
 
 BATCH = 2000
 NOW = dt.datetime.now().replace(microsecond=0)
@@ -524,9 +522,9 @@ def main():
     t_all = time.time()
     log('=== 模块 1「查销量」ETL 开始 ===')
 
-    pg = psycopg2.connect(**PG_DSN)
+    pg = psycopg2.connect(**pg_dsn())
     pg.set_session(readonly=True)          # 只读，绝不动 PG
-    doris = pymysql.connect(**DORIS_DSN)
+    doris = pymysql.connect(**doris_dsn(autocommit=False))
 
     stats = {}
     try:

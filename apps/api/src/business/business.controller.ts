@@ -20,12 +20,16 @@ import { SalesService } from './sales.service'
 import { TrafficService } from './traffic.service'
 import { SuppliersService } from './suppliers.service'
 import { DiagnosisService } from './diagnosis.service'
+import { WordPickService } from './wordpick.service'
 import {
+  AcosEstimateQueryDto,
   AsinQueryDto,
+  BidEstimateQueryDto,
   COUNTRIES,
   KeywordListDto,
   SupplierSearchDto,
   TimePieceQueryDto,
+  WordPickQueryDto,
 } from './dto/query.dto'
 
 class CompareDto {
@@ -55,6 +59,7 @@ export class BusinessController {
     private readonly insights: InsightsService,
     private readonly suppliers: SuppliersService,
     private readonly diagnosis: DiagnosisService,
+    private readonly wordpick: WordPickService,
     private readonly users: UsersService,
   ) {}
 
@@ -154,14 +159,21 @@ export class BusinessController {
     return res
   }
 
-  /** 单个关键词的流量来源。对应 goal.md 的 /keywords/source */
-  @Get('keywords/:keywordId/source')
+  /**
+   * 单个关键词的流量来源。对应 goal.md 的 /keywords/source
+   *
+   * ⚠️ 路径参数是**关键词文本**（URL 编码），不是 keyword_id。
+   * 原因：keyword_id 跨站点不唯一且多数源接口不返回，
+   * schema-04 已把主键改成 (keyword, country)。
+   * 关键词可能含空格和特殊字符，前端必须 encodeURIComponent。
+   */
+  @Get('keywords/:keyword/source')
   keywordSource(
-    @Param('keywordId') keywordId: string,
+    @Param('keyword') keyword: string,
     @Query('country') country = 'US',
     @Query('asin') asin?: string,
   ) {
-    return this.keywords.getKeywordSource(keywordId, country, asin)
+    return this.keywords.getKeywordSource(keyword, country, asin)
   }
 
   // ---- 广告透视 ----
@@ -251,6 +263,107 @@ export class BusinessController {
   @RequirePermissions('supplier:read')
   supplierLocations() {
     return this.suppliers.listLocations()
+  }
+
+  // ---- M13 选词 / 关键词竞争分析（4 页）----
+  //
+  // 路由按「功能」命名而非照抄原站（原站 /amount、/compete 这类名字
+  // 脱离上下文看不出是什么）。四页的数据就绪度不同，各方法的
+  // dataScope 字段会如实返回给前端，见 wordpick.service.ts 的类注释。
+
+  /** 关键词转化率：搜索量 → 点击量 → 购买量漏斗 + 价格带 */
+  @Get('wordpick/conversion')
+  async wordpickConversion(
+    @Query() q: WordPickQueryDto,
+    @User() user: CurrentUser,
+    @Ip() ip: string,
+  ) {
+    const t0 = Date.now()
+    const res = await this.wordpick.listConversion(q)
+    this.track(
+      user, ip, 'keyword', q.keyword || '（榜单）', q.country ?? 'US',
+      '/wordpick/conversion', t0, res.items?.length,
+    )
+    return res
+  }
+
+  /** 流量位竞品数量：该词下各流量位有多少竞品 ASIN 在占位 */
+  @Get('wordpick/amount')
+  async wordpickAmount(
+    @Query() q: WordPickQueryDto,
+    @User() user: CurrentUser,
+    @Ip() ip: string,
+  ) {
+    const t0 = Date.now()
+    const res = await this.wordpick.listAmount(q)
+    this.track(
+      user, ip, 'keyword', q.keyword || '（榜单）', q.country ?? 'US',
+      '/wordpick/amount', t0, res.items?.length,
+    )
+    return res
+  }
+
+  /**
+   * 流量位竞争格局：该词下的 ASIN × 流量位份额矩阵。
+   *
+   * ⚠️ 与同族其他三页不同，本页 keyword 必填（不填返回空列表 + 提示）——
+   * 表的粒度是 (关键词, ASIN)，跨词混排份额没有可比性。
+   */
+  @Get('wordpick/compete')
+  async wordpickCompete(
+    @Query() q: WordPickQueryDto,
+    @User() user: CurrentUser,
+    @Ip() ip: string,
+  ) {
+    const t0 = Date.now()
+    const res = await this.wordpick.listCompetePattern(q)
+    this.track(
+      user, ip, 'keyword', q.keyword || '（未指定）', q.country ?? 'US',
+      '/wordpick/compete', t0, res.items?.length,
+    )
+    return res
+  }
+
+  /**
+   * ACOS / CPA 三档预估（转化率页的两列）。
+   *
+   * ⚠️ 返回的 acos* 是源侧默认毛利率下的参考值 —— 原站是让用户填
+   * 自定义毛利率后基于 CPA 前端实时算的。前端不要把 acos 当唯一结论。
+   */
+  @Get('wordpick/acos')
+  async wordpickAcos(
+    @Query() q: AcosEstimateQueryDto,
+    @User() user: CurrentUser,
+    @Ip() ip: string,
+  ) {
+    const t0 = Date.now()
+    const res = await this.wordpick.listAcosEstimate(q)
+    this.track(
+      user, ip, 'keyword', q.keyword || '（榜单）', q.country ?? 'US',
+      '/wordpick/acos', t0, res.items?.length,
+    )
+    return res
+  }
+
+  /**
+   * 建议竞价：关键词 × 类目 × 匹配方式 × 投放策略。
+   *
+   * ⚠️ 本页数据是 seed（真实源 search/cpc/category 未接入），
+   * 响应的 isSeed=true，前端**必须**显示「模拟数据」标记。
+   */
+  @Get('wordpick/bid')
+  async wordpickBid(
+    @Query() q: BidEstimateQueryDto,
+    @User() user: CurrentUser,
+    @Ip() ip: string,
+  ) {
+    const t0 = Date.now()
+    const res = await this.wordpick.listBidEstimate(q)
+    this.track(
+      user, ip, 'keyword', q.keyword || '（榜单）', q.country ?? 'US',
+      '/wordpick/bid', t0, res.items?.length,
+    )
+    return res
   }
 
   // ---- AI 综合诊断汇总（P3）----

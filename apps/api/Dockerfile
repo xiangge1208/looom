@@ -37,7 +37,13 @@ COPY --from=builder /app/apps/api/dist ./dist
 # SQL 文件和初始化脚本都要进镜像 —— 用 Node 执行而非 mysql 客户端，
 # 省掉一个 apk 依赖，详见 scripts/init-db.mjs 的说明。
 COPY apps/api/scripts/init-db.mjs ./scripts/init-db.mjs
-COPY db/schema-01-system.sql db/schema-02-business.sql db/seed.sql /app/db/
+# 加新 schema 文件时这里和 init-db.mjs 的 FILES 要同步改，
+# 否则容器环境与手动 setup-doris.sh 建出的库 schema 不一致。
+COPY db/schema-01-system.sql db/schema-02-business.sql \
+     db/schema-03-gap-tables.sql db/schema-04-keyword-text-key.sql \
+     db/schema-05-partitions.sql db/schema-06-m13-wordpick.sql \
+     db/schema-07-m13-rework.sql \
+     db/seed.sql db/seed-unbuilt.sql /app/db/
 
 # 不用 root 跑，降低容器逃逸的影响面
 USER node

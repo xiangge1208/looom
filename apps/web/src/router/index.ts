@@ -122,6 +122,49 @@ const routes: RouteRecordRaw[] = [
         meta: { title: '竞品对比' },
       },
 
+      // ---- M13 选词 / 关键词竞争分析（4 页）----
+      //
+      // 路由前缀 wordpick 而非照抄原站（原站的 /amount、/compete
+      // 脱离上下文看不出是什么功能）。
+      // 四页以关键词为纽带互相跳转，/amount 的「查看竞争格局」跳 wordpick-compete。
+      {
+        path: 'wordpick/conversion',
+        name: 'wordpick-conversion',
+        component: () => import('@/views/WordPickConversionView.vue'),
+        meta: {
+          title: '关键词转化率',
+          description:
+            'ABA 转化漏斗：搜索量 → 点击量 → 购买量，并按自定义毛利率实时计算 ACOS。',
+        },
+      },
+      {
+        path: 'wordpick/amount',
+        name: 'wordpick-amount',
+        component: () => import('@/views/WordPickAmountView.vue'),
+        meta: {
+          title: '流量位竞品数量',
+          description: '该关键词下各流量位有多少竞品在占位，用于判断哪类位置竞争较松。',
+        },
+      },
+      {
+        path: 'wordpick/compete',
+        name: 'wordpick-compete',
+        component: () => import('@/views/WordPickCompeteView.vue'),
+        meta: {
+          title: '流量位竞争格局',
+          description: '该关键词下具体是哪些产品在占位、各占哪类流量位多少份额。',
+        },
+      },
+      {
+        path: 'wordpick/bid',
+        name: 'wordpick-bid',
+        component: () => import('@/views/WordPickBidView.vue'),
+        meta: {
+          title: '查关键词竞价',
+          description: '各类目的建议竞价（与品类强相关）。⚠️ 当前为模拟数据。',
+        },
+      },
+
       {
         path: 'diagnosis',
         name: 'diagnosis',

@@ -30,6 +30,7 @@ const timePieceValue = ref<string | null>(null)
 const drawerVisible = ref(false)
 const sourceData = ref<any>(null)
 const sourceLoading = ref(false)
+const sourceError = ref('')
 
 async function load(reset = true) {
   if (reset) {
@@ -77,8 +78,13 @@ async function openSource(row: KeywordRow) {
   drawerVisible.value = true
   sourceLoading.value = true
   sourceData.value = null
+  sourceError.value = ''
   try {
-    sourceData.value = await businessApi.keywordSource(row.keywordId, 'US', asin.value)
+    // 用关键词文本作为键（keywordId 可空且跨站不唯一），country 跟随全局默认站点
+    sourceData.value = await businessApi.keywordSource(row.keyword, undefined, asin.value)
+  } catch (e: any) {
+    // 原先没有 catch，失败时抽屉会一直空白转圈，用户不知道发生了什么
+    sourceError.value = e?.message ?? '加载流量来源失败，请稍后重试'
   } finally {
     sourceLoading.value = false
   }
@@ -256,6 +262,14 @@ const CHANNEL_NAMES: Record<string, string> = {
     <!-- 关键词流量来源抽屉。对应 goal.md 的 /keywords/source -->
     <el-drawer v-model="drawerVisible" title="关键词流量来源" size="46%">
       <div v-loading="sourceLoading">
+        <!-- 失败要明确告知，不能只是空白转圈 -->
+        <el-alert
+          v-if="sourceError"
+          type="error"
+          :title="sourceError"
+          :closable="false"
+          show-icon
+        />
         <template v-if="sourceData">
           <div class="src-head">
             <div class="src-kw">{{ sourceData.keyword.keyword }}</div>

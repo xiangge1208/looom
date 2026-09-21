@@ -8,6 +8,32 @@
 
 ---
 
+## ⚠️ 命名约定（先读，否则会把 endpoint 当成表名）
+
+文档里两类东西都用等宽字体，但含义完全不同：
+
+| 写法 | 是什么 | 数量 |
+|---|---|---|
+| **`sif_` 前缀**（`sif_asin_meta`、`sif_asin_keyword` …） | **PG 真实表** | 9 张已结构化表 + 3 张运维表 |
+| **含连字符 `-`**（`web-sales-keyword`、`asin-keyword-list` …） | **不是表**，是 `sif_api_log.endpoint` 列的**取值** | 41 个 |
+
+PG 里**只有 `sif_api_log` 一张表存原始响应**，41 个接口的数据全在这张表里，靠 `endpoint` 列区分。
+所以「源 = `web-sales-keyword` → `data.asins[].brand`」的实际 SQL 是：
+
+```sql
+SELECT l.site AS country, el->>'asin' AS asin, el->>'brand' AS brand
+FROM sif_api_log l
+CROSS JOIN LATERAL jsonb_array_elements(
+  CASE WHEN jsonb_typeof(l.resp->'data'->'asins') = 'array'
+       THEN l.resp->'data'->'asins' ELSE '[]'::jsonb END) el
+WHERE l.endpoint = 'web-sales-keyword'   -- ← 筛选条件，不是表名
+  AND l.ok;
+```
+
+`jsonb_typeof` 守卫必须保留，否则遇到非数组行会报 `cannot extract elements from a scalar`。
+
+---
+
 ## 0. 结论摘要
 
 | 维度 | 数量 | 说明 |
@@ -351,8 +377,8 @@ Other items to consider         Trending styles
 5. `fact_asin_listing_snapshot` / `fact_asin_subbsr_snapshot` ← 同表
 
 **第 2 批（解析 raw JSON，P0 四个 endpoint）**
-6. `rel_asin_variant` ← `web-asin-variants`（父体从 params 取）
-7. `fact_asin_keyword_overview` ← `web-asin-keyword-overview`
+6. `rel_asin_variant` ← `sif_api_log`[ep=`web-asin-variants`]（父体从 `params->>'asin'` 取）
+7. `fact_asin_keyword_overview` ← `sif_api_log`[ep=`web-asin-keyword-overview`]
 8. `fact_keyword_rank_history` ← `core/head-keywords` 的 `allRankHistory`
 9. `dim_recommend_column` ← 18 个 recTitle（§7）
 

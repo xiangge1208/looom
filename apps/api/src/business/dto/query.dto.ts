@@ -7,6 +7,7 @@ import {
   IsString,
   Matches,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator'
 
@@ -30,6 +31,28 @@ export const TIME_PIECE_TYPES = ['month', 'day'] as const
 
 /** ASIN 格式：10 位大写字母数字，B0 开头是常见形态但不强制 */
 const ASIN_RE = /^[A-Z0-9]{10}$/
+
+/**
+ * 匹配方式与投放策略（M13 ACOS/竞价两页共用）。
+ *
+ * ⚠️ 2026-09-21 返工：原先是 6 个拼接值（`autoForSales_broad` 等），
+ * 直接照抄 web-keyword-conversion 的 JSON 键名。schema-07 把库里的
+ * `match_type` 列拆成了 `match_type` × `bid_strategy` 两维，
+ * 对外参数也跟着拆 —— 拼接值不再接受。
+ *
+ * 拆分对应：`autoForSales_exact` → matchType=exact, bidStrategy=auto
+ *
+ * 之所以拆：真正的「建议竞价」表（fact_keyword_bid_estimate）主键是
+ * (keyword, country, category_id, match_type, bid_strategy, stat_month)，
+ * 两张表维度对齐后 service 只写一套解析。
+ *
+ * ⚠️ 必须定义在使用它的类之前 —— @IsIn 是装饰器，
+ * 在类定义求值时就要读到这个常量，放在文件末尾会得到 undefined。
+ */
+export const MATCH_TYPES = ['broad', 'phrase', 'exact'] as const
+
+/** auto=自动投放 legacy=手动投放。原站已把「仅降低」与「固定」合并为一档 */
+export const BID_STRATEGIES = ['auto', 'legacy'] as const
 
 export class AsinQueryDto {
   @IsString({ message: 'asin 不能为空' })
@@ -135,4 +158,101 @@ export class SupplierSearchDto {
   @Min(1)
   @Max(100)
   limit?: number
+}
+
+/**
+ * M13 选词 / 关键词竞争分析（4 个页面共用）
+ *
+ * 与 AsinQueryDto 的区别：这几个页面是**按关键词查**而不是按 ASIN 查，
+ * 所以主参数是 keyword。ASIN 那套 10 位格式校验在这里不适用。
+ *
+ * keyword 归一：ETL 侧统一 btrim(lower())（schema-04 的规则），
+ * 所以这里也要小写化后再查，否则大写输入查不到。
+ */
+export class WordPickQueryDto extends CursorQueryDto {
+  /**
+   * 关键词。可选 —— 不传时返回该站点的榜单（按销量/搜索量排序），
+   * 传了则精确匹配单词。实测 dim_keyword 最长 128 字符。
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(128, { message: '关键词最长 128 字符' })
+  @Transform(({ value }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  keyword?: string
+
+  @IsOptional()
+  @IsIn(COUNTRIES as unknown as string[], { message: '不支持的站点代码' })
+  country?: string = 'US'
+
+  /** ABA 周起始日。不传用库里最新一周 */
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: '周起始日格式应为 YYYY-MM-DD' })
+  statWeek?: string
+
+  /**
+   * 只返回有竞品数量数据的词（/amount 页用）。
+   *
+   * 默认 false —— 竞品数量列落表只有 318/22,320 行（compete 源覆盖面窄），
+   * 默认开启会让用户以为库里只有 318 个词。
+   */
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  onlyWithCompete?: boolean
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'], { message: 'order 只能是 asc 或 desc' })
+  order?: string = 'desc'
+
+  /**
+   * 排序字段。各页可用值不同，具体白名单在 wordpick.service.ts 里，
+   * 这里只校验是字符串 —— 白名单校验放 service 是因为 4 个页面的可排序列不同，
+   * 塞进 DTO 会变成一个大杂烩的 @IsIn。
+   */
+  @IsOptional()
+  @IsString()
+  sortBy?: string
+}
+
+/**
+ * ACOS/CPA 页（/conversion-rate 的三档预估）专用：匹配方式 + 投放策略两维筛选。
+ *
+ * 两者都不传则返回该词的全部组合（最多 6 行，实测 13% 的词只有 3 行 ——
+ * 只有 auto 或只有 legacy，见 wordpick.service.ts 的口径说明）。
+ */
+export class AcosEstimateQueryDto extends WordPickQueryDto {
+  @IsOptional()
+  @IsIn(MATCH_TYPES as unknown as string[], {
+    message: '匹配方式只能是 broad / phrase / exact',
+  })
+  matchType?: string
+
+  @IsOptional()
+  @IsIn(BID_STRATEGIES as unknown as string[], {
+    message: '投放策略只能是 auto / legacy',
+  })
+  bidStrategy?: string
+}
+
+/**
+ * 建议竞价页（/cpc-browsetree）专用：比 ACOS 多一个**类目**维。
+ *
+ * ⚠️ 类目是这个指标的核心维度 —— 原站页面说明第 1 条明确
+ * 「建议竞价与产品无关，与品类强相关」。不带类目的竞价数字没有意义。
+ * ⚠️ 本页数据是 seed（源 search/cpc/category 未爬），前端需显示「模拟数据」标记。
+ */
+export class BidEstimateQueryDto extends AcosEstimateQueryDto {
+  /** 类目 ID。不传返回该词的全部类目（实测每词 4~14 个，均值 10.3） */
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  categoryId?: string
+
+  /** 统计月 YYYY-MM。竞价每月更新一次，不用周 */
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}$/, { message: '统计月格式应为 YYYY-MM' })
+  statMonth?: string
 }

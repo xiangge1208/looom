@@ -11,7 +11,22 @@
 #   bash scripts/setup-doris.sh     # 建库建表 + seed
 #   bash scripts/setup-doris.sh --skip-seed  # 只建库建表
 #
+#   RESET_KEYWORD_DOMAIN=1 bash scripts/setup-doris.sh
+#     ↑ 额外执行 db/schema-04-keyword-text-key.sql，**会清空 16 张关键词表**
+#
+#   RUN_PARTITION_MIGRATION=1 bash scripts/setup-doris.sh
+#     ↑ 额外执行 db/schema-05-partitions.sql，给两张大表加按月自动分区。
+#       会搬 165 万行数据并 RENAME，旧表留成 *_old 待人工核对后删。只需跑一次。
+#
 # 前置：本机需有 mysql 客户端；.env 里配好 DB_ROOT_PASSWORD
+#
+# 为什么 schema-04 不在默认流程里（重要）：
+#   schema-04 用 DROP TABLE + CREATE TABLE（不是 IF NOT EXISTS），
+#   它做的是「关键词域主键从 keyword_id 改成 (keyword,country)」的一次性改造。
+#   放进 glob 会导致每次跑本脚本都清空 dim_keyword 等 16 张表，
+#   其中 dim_keyword(13,070 行)、fact_keyword_competition_snapshot(3,244)、
+#   fact_keyword_conversion_funnel(854) 已有真实数据，清掉要重跑 ETL 才能恢复。
+#   所以改成显式 opt-in：只有全新建库或确实要重置关键词域时才带上这个变量。
 #
 # 安全约束（重要）：
 #   本脚本只操作 $DB_NAME 指定的库。
@@ -87,12 +102,81 @@ run_sql -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`;"
 echo "      完成。"
 
 # ---- 3. 建表 ----
+#
+# 只跑幂等的 schema，跳过三个非幂等文件：
+#   schema-04 关键词域重建（DROP+CREATE）→ RESET_KEYWORD_DOMAIN=1
+#   schema-05 大表分区迁移（搬数据+RENAME）→ RUN_PARTITION_MIGRATION=1
+#   schema-07 M13 返工（RENAME + INSERT SELECT）→ 见下方单独处理
+# 通配符 schema-0[!457]-*.sql 排除这三个；将来有 schema-1x 需改成显式列表。
 echo "[3/4] 建表..."
-for f in "$ROOT_DIR"/db/schema-*.sql; do
+for f in "$ROOT_DIR"/db/schema-0[!457]-*.sql; do
   [ -e "$f" ] || continue
   echo "      执行 $(basename "$f")"
   run_sql < "$f"
 done
+
+# ---- schema-07：M13 数据层返工，非幂等，带存在性守卫 ----
+#
+# 为什么不能进上面的 glob：
+#   1. 含 `ALTER TABLE ... RENAME`，表已改名后再跑会报 Unknown table 并中断
+#   2. 含 `INSERT INTO ... SELECT` 迁移数据，重复跑虽因 Unique Key 覆盖而安全，
+#      但会白跑一遍 33,019 行
+#   3. Doris 的 ADD COLUMN 是异步 SCHEMA_CHANGE，同表连续 ALTER 会报
+#      `state(SCHEMA_CHANGE) is not NORMAL`，必须分批
+#
+# 守卫方式：探测目标表 fact_keyword_acos_estimate 是否已存在。
+# 存在 = 已执行过，跳过；不存在 = 需要执行。
+REWORK_SCHEMA="$ROOT_DIR/db/schema-07-m13-rework.sql"
+if [ -f "$REWORK_SCHEMA" ]; then
+  ACOS_EXISTS=$(run_sql -N -e \
+    "SELECT COUNT(*) FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='fact_keyword_acos_estimate';")
+  if [ "$ACOS_EXISTS" = "0" ]; then
+    echo "      执行 $(basename "$REWORK_SCHEMA")（M13 返工：改名+拆维+补列）"
+    # ⚠️ 不加 --force：这个文件的语句有先后依赖（改名 → 建表 → 迁数据），
+    #    中途失败必须停下来让人看，不能跳过继续。
+    run_sql < "$REWORK_SCHEMA" || {
+      echo "      ⚠️  schema-07 执行中断。Doris 的 ADD COLUMN 是异步的，"
+      echo "          若报 'state(SCHEMA_CHANGE) is not NORMAL'，等几秒重跑本脚本即可"
+      echo "          （已完成的部分有守卫，不会重复执行）。"
+      exit 1
+    }
+  else
+    echo "      跳过 schema-07（fact_keyword_acos_estimate 已存在，说明已执行过）"
+  fi
+fi
+
+# schema-04 是破坏性的关键词域重建，只在显式要求时执行
+KEYWORD_SCHEMA="$ROOT_DIR/db/schema-04-keyword-text-key.sql"
+if [ "${RESET_KEYWORD_DOMAIN:-0}" = "1" ]; then
+  if [ -f "$KEYWORD_SCHEMA" ]; then
+    echo "      执行 $(basename "$KEYWORD_SCHEMA")（RESET_KEYWORD_DOMAIN=1，将清空关键词表）"
+    run_sql < "$KEYWORD_SCHEMA"
+  fi
+else
+  # 全新库里这 16 张表不存在，不跑 schema-04 会让后端按文本键写的 JOIN 报
+  # Unknown column 'keyword'，所以这里主动探测并提示，而不是静默跳过。
+  KW_EXISTS=$(run_sql -N -e \
+    "SELECT COUNT(*) FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='dim_keyword';")
+  if [ "$KW_EXISTS" = "0" ]; then
+    echo "      ⚠️  dim_keyword 不存在，说明这是全新库。"
+    echo "          关键词域 16 张表需要执行 schema-04 才会建出来："
+    echo "            RESET_KEYWORD_DOMAIN=1 bash scripts/setup-doris.sh"
+    echo "          （新库里执行无数据损失风险）"
+  else
+    echo "      跳过 schema-04（破坏性重建）。需重置关键词域时设 RESET_KEYWORD_DOMAIN=1。"
+  fi
+fi
+
+# schema-05 是大表分区迁移，会搬 165 万行数据并 RENAME，只在显式要求时执行
+PARTITION_SCHEMA="$ROOT_DIR/db/schema-05-partitions.sql"
+if [ "${RUN_PARTITION_MIGRATION:-0}" = "1" ] && [ -f "$PARTITION_SCHEMA" ]; then
+  echo "      执行 $(basename "$PARTITION_SCHEMA")（搬数据 + RENAME，大表耗时）"
+  run_sql < "$PARTITION_SCHEMA"
+  echo "      ⚠️  旧表保留为 *_old，核对行数后手动 DROP（见该 SQL 文件 §3）"
+fi
+
 TABLE_COUNT=$(run_sql -N -e \
   "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='$DB_NAME';")
 echo "      完成，当前共 $TABLE_COUNT 张表。"

@@ -40,6 +40,16 @@ const navGroups = [
     ],
   },
   {
+    // M13。原站把这组叫「选词」，四页以关键词为纽带互相跳转
+    title: '选词',
+    items: [
+      { name: 'wordpick-conversion', label: '关键词转化率', icon: '⇅' },
+      { name: 'wordpick-amount', label: '流量位竞品数量', icon: '⊟' },
+      { name: 'wordpick-compete', label: '流量位竞争格局', icon: '⊜' },
+      { name: 'wordpick-bid', label: '查关键词竞价', icon: '¤' },
+    ],
+  },
+  {
     title: '广告与竞品',
     items: [
       { name: 'ads', label: '广告透视', icon: '⊞' },

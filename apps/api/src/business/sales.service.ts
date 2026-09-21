@@ -79,10 +79,28 @@ export class SalesService {
       [country, parentAsin, ...variants.map((v: any) => v.asin)].filter(Boolean),
     )
 
-    // 维度名来自父体（feature_value 为空的那些行）
-    const dimensions = features
-    .filter((f: any) => f.asin === parentAsin && !f.feature_value)
-.map((f: any) => f.feature_name)
+    /**
+     * 变体属性维度名。
+     *
+     * 优先取父体那些 feature_value 为空的「声明行」—— 这是维度的权威来源，
+     * 且保留了原站的维度顺序。
+     *
+     * ⚠️ 但父体**可能自己也是一个在售变体**（实测 B0FVNPKGJ8 就是：它既是
+     * 390 个子体的 parent_asin，又是其中一条 child_asin）。这种情况下
+     * dim_asin_feature 的主键 (asin,country,feature_name) 决定了同一个
+     * ASIN 的同一维度只能存一行 —— 要么存维度声明（值为空），要么存它自己的
+     * 属性值，不能两者兼得。ETL 会优先存真实属性值，于是声明行不存在。
+     *
+     * 所以声明行缺失时，退而用**全组 feature_name 的并集**。
+     * 不这么兜底的话 dimensions 会是空数组，前端的属性列整列消失。
+     */
+    const declared = features
+      .filter((f: any) => f.asin === parentAsin && !f.feature_value)
+      .map((f: any) => f.feature_name)
+
+    const dimensions = declared.length
+      ? declared
+      : [...new Set(features.map((f: any) => f.feature_name as string))].sort()
 
  const featureMap = new Map<string, Record<string, string>>()
     for (const f of features) {
@@ -96,15 +114,22 @@ export class SalesService {
     const asinList = variants.map((v: any) => v.asin)
     const latest = asinList.length
       ? await this.db.query<any>(
-       // 子查询也要按 country 过滤：否则各站点数据进度不一致时，
-          // 会拿别的站点的最新月去筛当前站点，结果为空被当成「无销量数据」
+       // 子查询的过滤条件要与外层**完全一致**（country + 同一批 ASIN）。
+          //
+          // ⚠️ 只按 country 取最新月是隐患：那是「全站点最新月」，而各 ASIN
+          // 的数据进度并不齐。一旦某组变体只到上个月，就会一行都查不到，
+          // 页面把「上月有销量」显示成「无销量数据」。同类问题在
+          // traffic.service.ts / keywords.service.ts 都实际发生过
+          // （keywords 那张表实测 19% 的 ASIN 落后一个月）。
+          // 本表当前各组进度恰好一致，但不能依赖这个巧合。
           `SELECT asin, stat_month, bought_lower_bound, bought_label
     FROM fact_asin_bought_monthly
         WHERE country = ? AND asin IN (${asinList.map(() => '?').join(', ')})
    AND stat_month = (
-              SELECT MAX(stat_month) FROM fact_asin_bought_monthly WHERE country = ?
+              SELECT MAX(stat_month) FROM fact_asin_bought_monthly
+               WHERE country = ? AND asin IN (${asinList.map(() => '?').join(', ')})
             )`,
-       [country, ...asinList, country],
+       [country, ...asinList, country, ...asinList],
      )
    : []
     const latestMap = new Map(latest.map((r: any) => [r.asin, r]))
@@ -170,7 +195,22 @@ export class SalesService {
           boughtLowerBound: latestMap.get(v.asin)
             ? Number(latestMap.get(v.asin).bought_lower_bound)
             : null,
-          isParent: false,
+          /**
+           * 父体也可能**出现在自己的子体列表里**。
+           *
+           * 实测 B0FVNPKGJ8（真实数据）在 rel_asin_variant 里既是 390 个
+           * 子体的 parent_asin，又是其中一条 child_asin（display_order=215）——
+           * 上游 web-asin-variants 就是这么给的：这个 ASIN 既是变体组的锚点，
+           * 也是一个可下单的具体变体。
+           *
+           * 上面那段插入逻辑遇到这种情况会跳过（父体已在 variants 里），
+           * 于是父体被当成普通变体排在第 216 位，前端的「父体钉首行」失效。
+           * 所以这里要按 ASIN 比对补上标记，不能硬编码 false。
+           *
+           * 注意：这种行**保留自己的销量和流量占比**，不像插入的纯父体行置 null ——
+           * 它确实作为一个变体在卖，有真实销量，抹成 null 才是失真。
+           */
+          isParent: v.asin === parentAsin,
         })),
       ],
     }

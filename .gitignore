@@ -27,5 +27,14 @@ tools/sif-proxy.mjs
 .playwright-cli/
 *.snapshot.txt
 
-# 编辑器/助手的会话临时文件
+# 编辑器/助手的会话临时文件与本地配置
+# .zcodeignore 的内容自动同步自本文件，属个人环境配置，不进仓库
 .zcode/
+.zcodeignore
+
+# Python ETL 脚本的字节码缓存（构建产物）
+__pycache__/
+*.pyc
+
+# 调试期的页面截图，不随项目发布
+compete-view.png

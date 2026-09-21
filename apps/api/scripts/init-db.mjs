@@ -36,12 +36,53 @@ const DB_NAME = process.env.DB_NAME ?? 'looom'
 const DB_USER = process.env.DB_ROOT_USER ?? process.env.DB_USER ?? 'root'
 const DB_PASSWORD = process.env.DB_ROOT_PASSWORD ?? process.env.DB_PASSWORD ?? ''
 
-/** SQL 文件在镜像里的位置，见 Dockerfile 的 COPY */
+/**
+ * 幂等的 SQL 文件，每次启动都执行。位置见 Dockerfile 的 COPY。
+ *
+ * 顺序必须与 scripts/setup-doris.sh 的 glob 一致，否则容器环境和手动建库
+ * 会产出不同的 schema。schema-03 是 2026-09-20 JSON 深挖补的 3 张表，
+ * 漏掉它会让容器里少 3 张表。
+ */
 const FILES = [
   '/app/db/schema-01-system.sql',
   '/app/db/schema-02-business.sql',
+  '/app/db/schema-03-gap-tables.sql',
+  // schema-05 大表按月分区、schema-06 M13 第一版建表。
+  // ⚠️ 这两个此前漏在这里，导致容器建出的库比 setup-doris.sh 少表。
+  // schema-05 的分区迁移部分对已有表是搬数据+RENAME（非幂等），
+  // 但对全新库（容器场景）只是带分区建表，所以放这里是安全的。
+  '/app/db/schema-05-partitions.sql',
+  '/app/db/schema-06-m13-wordpick.sql',
   '/app/db/seed.sql',
+  // M13 竞价页的 seed（真实源未接入，走生成器）。
+  // ⚠️ 必须在 schema-07 之后 —— 目标表 fact_keyword_bid_estimate 是
+  // schema-07 重建的，schema-06 建的那张已被改名成 acos_estimate。
+  '/app/db/seed-unbuilt.sql',
 ]
+
+/**
+ * M13 数据层返工 —— **非幂等**，带存在性守卫。
+ *
+ * 含 ALTER TABLE RENAME 和 INSERT SELECT，重复执行会报 Unknown table。
+ * 守卫：探测 fact_keyword_acos_estimate 是否已存在（存在=已执行过）。
+ *
+ * 顺序要求：必须在 FILES 的 schema-06 之后、seed-unbuilt.sql 之前。
+ * 代码里的执行点见下方 main()。
+ */
+const REWORK_SCHEMA = '/app/db/schema-07-m13-rework.sql'
+
+/**
+ * 关键词域重建脚本 —— **破坏性**，不能无条件执行。
+ *
+ * schema-04 把 16 张关键词表的主键从 keyword_id 改成 (keyword, country)，
+ * 用的是 DROP TABLE + CREATE TABLE。每次容器重启都跑会清空 dim_keyword 等表。
+ *
+ * 执行条件（与 setup-doris.sh 的守卫保持一致）：
+ *   - dim_keyword 不存在（全新库，无数据可丢）→ 必须跑，否则后端按文本键写的
+ *     JOIN 会报 Unknown column 'keyword'
+ *   - 或显式设 RESET_KEYWORD_DOMAIN=1
+ */
+const KEYWORD_SCHEMA = '/app/db/schema-04-keyword-text-key.sql'
 
 /**
  * 把 SQL 文件切成单条语句。
@@ -61,6 +102,64 @@ function splitStatements(sql) {
 
 async function main() {
   const log = (m) => console.log(`[init-db] ${m}`)
+
+  /**
+   * 执行 M13 返工（schema-07），带存在性守卫。
+   *
+   * 非幂等的原因与守卫方式见 REWORK_SCHEMA 的注释。
+   * 失败不抛异常 —— 与本脚本的整体原则一致：初始化问题不阻断后端启动，
+   * 只记日志让人去看。
+   */
+  async function runReworkOnce(conn) {
+    if (!existsSync(REWORK_SCHEMA)) return
+
+    const [r] = await conn.query(
+      `SELECT COUNT(*) AS n FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'fact_keyword_acos_estimate'`,
+      [DB_NAME],
+    )
+    if (Number(r[0].n) > 0) {
+      log('跳过 schema-07（fact_keyword_acos_estimate 已存在，说明已执行过）')
+      return
+    }
+
+    log('执行 schema-07（M13 返工：ACOS 表改名拆维 + 竞价表重建 + 补列）')
+    try {
+      await runFile(conn, REWORK_SCHEMA)
+    } catch (e) {
+      // Doris 的 ADD COLUMN 是异步 SCHEMA_CHANGE，同表连续 ALTER 可能报
+      // state(SCHEMA_CHANGE) is not NORMAL。下次启动会重试（守卫会看到
+      // acos_estimate 已建好就跳过，剩余的 ALTER 需要手动补）。
+      console.error(
+        `[init-db] schema-07 执行中断：${e.message}\n` +
+          '          若是 SCHEMA_CHANGE 冲突，手动重跑 ' +
+          'bash scripts/setup-doris.sh 即可（已完成部分有守卫）。',
+      )
+    }
+  }
+
+  /** 逐条执行一个 SQL 文件，「表已存在」按跳过处理，不中断 */
+  async function runFile(conn, file) {
+    const statements = splitStatements(readFileSync(file, 'utf8'))
+    let ok = 0
+    let skipped = 0
+    for (const stmt of statements) {
+      try {
+        await conn.query(stmt)
+        ok++
+      } catch (err) {
+        // 表已存在之类的重复错误按「跳过」处理，符合 goal.md
+        // 「如果表已存在则跳过建表，不要报错中断」
+        if (/already exist|Duplicate/i.test(err.message)) {
+          skipped++
+        } else {
+          log(`语句失败（继续执行剩余语句）：${err.message}`)
+          log(`  SQL 片段：${stmt.slice(0, 120)}`)
+        }
+      }
+    }
+    log(`${file.split('/').pop()}：执行 ${ok} 条，跳过 ${skipped} 条`)
+  }
 
   const missing = FILES.filter((f) => !existsSync(f))
   if (missing.length) {
@@ -88,26 +187,39 @@ async function main() {
     await conn.query(`CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\``)
     await conn.query(`USE \`${DB_NAME}\``)
 
-    for (const file of FILES) {
-      const statements = splitStatements(readFileSync(file, 'utf8'))
-      let ok = 0
-      let skipped = 0
-      for (const stmt of statements) {
-        try {
-          await conn.query(stmt)
-          ok++
-        } catch (err) {
-          // 表已存在之类的重复错误按「跳过」处理，符合 goal.md
-          // 「如果表已存在则跳过建表，不要报错中断」
-          if (/already exist|Duplicate/i.test(err.message)) {
-            skipped++
-          } else {
-            log(`语句失败（继续执行剩余语句）：${err.message}`)
-            log(`  SQL 片段：${stmt.slice(0, 120)}`)
-          }
-        }
+    // ---- 关键词域：先判断要不要跑 schema-04（必须在 seed 之前）----
+    //
+    // 放在 FILES 之前执行，因为 seed.sql 里有往关键词表插数的语句，
+    // 若先 seed 再 DROP 重建，插进去的数据会被清掉。
+    if (existsSync(KEYWORD_SCHEMA)) {
+      const [kw] = await conn.query(
+        `SELECT COUNT(*) AS n FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'dim_keyword'`,
+        [DB_NAME],
+      )
+      const isFreshDb = Number(kw[0].n) === 0
+      const forced = process.env.RESET_KEYWORD_DOMAIN === '1'
+
+      if (isFreshDb || forced) {
+        log(
+          isFreshDb
+            ? 'dim_keyword 不存在（全新库），执行 schema-04 建关键词域'
+            : 'RESET_KEYWORD_DOMAIN=1，重建关键词域（将清空 16 张表）',
+        )
+        await runFile(conn, KEYWORD_SCHEMA)
+      } else {
+        log('跳过 schema-04（破坏性重建，关键词表已存在且有数据）')
       }
-      log(`${file.split('/').pop()}：执行 ${ok} 条，跳过 ${skipped} 条`)
+    }
+
+    // FILES 是顺序敏感的：schema-07 必须夹在 schema-06 与 seed-unbuilt 之间
+    // （它把 schema-06 建的 bid_estimate 改名，再重建一张新语义的同名表，
+    //   seed-unbuilt 灌的是新表）。所以循环到 seed-unbuilt 前插入返工步骤。
+    for (const file of FILES) {
+      if (file.endsWith('seed-unbuilt.sql')) {
+        await runReworkOnce(conn)
+      }
+      await runFile(conn, file)
     }
 
     const [rows] = await conn.query(

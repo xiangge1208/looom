@@ -22,10 +22,12 @@ export class TrafficService {
    *   3. 推荐专栏分布
    */
   async getTrafficStructure(asin: string, country: string, timePieceValue?: string) {
-    const month = timePieceValue ?? (await this.latestMonth(country))
-
-    // 解析出要统计的 ASIN 集合：传父体则汇总该组全部子体
+    // 先解析 ASIN 范围，再定月份 —— 顺序不能反。
+    // latestMonth 要按这批 ASIN 取月，而不是全站点最新月，
+    // 否则该组数据只到上个月时会被当成「无数据」（见 latestMonth 的说明）。
     const { asins, isGroup } = await this.resolveAsinScope(asin, country)
+    const month = timePieceValue ?? (await this.latestMonth(country, asins))
+
     if (!asins.length) {
       return {
         asin,
@@ -144,8 +146,6 @@ SUM(p.keyword_cnt) AS keyword_cnt
     dimension?: string,
     timePieceValue?: string,
   ) {
-    const month = timePieceValue ?? (await this.latestMonth(country))
-
     const target = await this.db.queryOne<any>(
       'SELECT asin, is_parent_asin, parent_asin FROM dim_asin WHERE asin = ? AND country = ? LIMIT 1',
       [asin, country],
@@ -163,6 +163,9 @@ SUM(p.keyword_cnt) AS keyword_cnt
       : [asin]
 
     if (!asins.length) return { dimension: dimension ?? 'variant', rows: [] }
+
+    // 同 getTrafficStructure：月份要按这批 ASIN 取，不是全站点最新月
+    const month = timePieceValue ?? (await this.latestMonth(country, asins))
 
     const ph = asins.map(() => '?').join(', ')
     const rows = await this.db.query<any>(
@@ -244,12 +247,35 @@ SUM(p.keyword_cnt) AS keyword_cnt
   /**
    * 数据最新月份。对应原站的 rankingUpdateTime 探针。
    *
-   * ⚠️ 必须按 country 取，不能取全局 MAX：
-   * 各站点数据进度可能不一致（比如 US 已到 2026-08、JP 只到 2026-06），
-   * 取全局最新月去查 JP 会得到空结果，被上层当成「该 ASIN 无数据」。
-   * 当前 seed 只有单站点，掩盖了这个问题。
+   * ## ⚠️ 两个必须按范围收敛的点
+   *
+   * 1. **按 country 取，不能取全局 MAX**：各站点数据进度可能不一致
+   *    （比如 US 已到 2026-08、JP 只到 2026-06），取全局最新月去查 JP
+   *    会得到空结果，被上层当成「该 ASIN 无数据」。
+   *
+   * 2. **按这批 ASIN 取，不能取全站点 MAX**（本次修复）：
+   *    全站最新月是 2026-09，但很多 ASIN 的最新数据只到 2026-08
+   *    （实测 B0SEEDSSP0 组就是这种）。
+   *    按全站最新月去查它们 → 空结果 → 页面显示「暂无数据」，
+   *    而真相是「这个 ASIN 在 9 月还没数据」。两者对用户是完全不同的信息。
+   *
+   *    这与 wordpick.service.ts 的 latestWeek 是同一类问题，
+   *    那里的修法也是「传了范围就按范围取最新」。
+   *
+   * @param asins 限定范围的 ASIN 列表；不传则取全站点最新月（调用方需知后果）
    */
-  private async latestMonth(country: string): Promise<string> {
+  private async latestMonth(country: string, asins?: string[]): Promise<string> {
+    if (asins && asins.length) {
+      const r = await this.db.queryOne<any>(
+        `SELECT MAX(time_piece_value) AS m FROM fact_asin_traffic_channel
+          WHERE time_piece_type = ? AND country = ?
+            AND asin IN (${asins.map(() => '?').join(', ')})`,
+        ['month', country, ...asins],
+      )
+      // 该组在这个站点完全没数据时，退回全站点最新月 ——
+      // 至少让查询有确定的月份，而不是拼出 `time_piece_value = undefined`
+      if (r?.m) return r.m
+    }
     const r = await this.db.queryOne<any>(
       `SELECT MAX(time_piece_value) AS m FROM fact_asin_traffic_channel
         WHERE time_piece_type = ? AND country = ?`,

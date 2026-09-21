@@ -27,6 +27,18 @@ const trend = ref<SalesTrend | null>(null)
 /** 折线图按什么维度聚合 */
 const chartDimension = ref('variant')
 
+/**
+ * 被隐藏的系列名。
+ *
+ * 用「隐藏集」而不是「选中集」：默认全部显示，用户点掉哪个就记哪个。
+ * 切换维度时必须清空 —— 否则上一维度的名字留在隐藏集里，
+ * 切回来会发现线莫名其妙不见了。
+ *
+ * ⚠️ 定义在 trendOption **之前**：虽然 computed 惰性求值、放后面也能跑，
+ * 但那样 trendOption 的依赖在源码里是「向下引用」，读代码时容易误判。
+ */
+const hiddenSeries = ref<Set<string>>(new Set())
+
 /** 可选维度：先把 "不同变体" 放前面，再接商品自身的属性维度 */
 const dimensionOptions = computed(() => {
   const opts = [{ label: '不同变体', value: 'variant' }]
@@ -227,23 +239,25 @@ function sortArrow(key: 'price' | 'bought' | 'traffic' | 'score') {
 }
 
 /**
- * 按维度聚合折线图。
+ * 全部系列（**未经过显隐过滤**）。
  *
- * variant 维度：每个变体一条线
- * 属性维度（如 Color）：同一属性值的变体求平均，合成一条线
+ * ⚠️ 必须与 trendOption 分开算。
+ * 曾经让 seriesNames 直接读 trendOption.series，结果是循环依赖：
+ * 点掉一个系列 → 它被过滤掉 → seriesNames 里也没了 →
+ * chip 从列表消失 → 用户再也点不回来（实测计数从 6/6 变成 4/5）。
+ *
+ * 所以这里保留全量，trendOption 才做过滤。
  */
-const trendOption = computed(() => {
+const allSeries = computed<any[]>(() => {
   const t = trend.value
   const ov = overview.value
-  if (!t || !ov) return null
+  if (!t || !ov) return []
 
   const PALETTE = ['#4f46e5', '#0d9488', '#d97706', '#dc2626', '#7c3aed', '#0284c7']
-
-  let series: any[]
   const labels = t.dates
 
   if (chartDimension.value === 'variant') {
-    series = t.series.map((s, i) => ({
+    return t.series.map((s, i) => ({
       name: shortName(s.asin, ov),
       type: 'line',
       smooth: true,
@@ -251,41 +265,86 @@ const trendOption = computed(() => {
       data: s.values,
       connectNulls: false,
       symbolSize: 4,
-      itemStyle: { color: PALETTE[i % PALETTE.length] },
-    }))
-  } else {
-    // 按属性值聚合：属于同一属性值的变体，其数值取平均
-    const groupMap = new Map<string, number[][]>()
-    t.series.forEach((s) => {
-      const feat = ov.variants.find((v) => v.asin === s.asin)?.features ?? {}
-      const key = feat[chartDimension.value]
-      if (!key) return
-      if (!groupMap.has(key)) groupMap.set(key, labels.map(() => []))
-      const buckets = groupMap.get(key)!
-      s.values.forEach((v, i) => {
-        if (v !== null) buckets[i].push(v)
-      })
-    })
-
-    series = [...groupMap.entries()].map(([key, buckets], i) => ({
-      name: key,
-      type: 'line',
-      smooth: true,
-      data: buckets.map((b) => (b.length ? Math.round(b.reduce((a, c) => a + c, 0) / b.length) : null)),
-      connectNulls: false,
-      symbolSize: 4,
+      // 颜色按**原始下标**分配，过滤后不重排 —— 隐藏再显示时颜色不跳变
       itemStyle: { color: PALETTE[i % PALETTE.length] },
     }))
   }
 
+  /**
+   * 按属性值聚合：属于同一属性值的变体，其数值**求和**。
+   *
+   * ⚠️ 是求和不是求平均。判据来自原站两组截图：
+   *   截图 1（不同变体）B09319MZJN 单条峰值 ~60,000
+   *   截图 2（不同 Style）它所属的「1 Pair」组峰值 ~100,000
+   * 组值**大于**成员值，而平均值必定 ≤ 成员最大值，所以只能是求和。
+   *
+   * 另一个角度：销量是「该变体卖了多少件」，同色多尺码的总销量
+   * 就是把各尺码的件数加起来。求平均会凭空缩小一个数量级，
+   * 也会让「组 > 单变体」这个自然关系消失。
+   *
+   * ⚠️ counts 用于区分「组内全部变体都缺该月数据」与「求和为 0」：
+   * 前者要留 null 让它断线，后者是真实的 0（当月确实没卖）。
+   * 直接判 `sum === 0 → null` 会把真实的零销量画成断线。
+   */
+  const groupMap = new Map<string, { sums: number[]; counts: number[] }>()
+  t.series.forEach((s) => {
+    const feat = ov.variants.find((v) => v.asin === s.asin)?.features ?? {}
+    const key = feat[chartDimension.value]
+    if (!key) return
+    if (!groupMap.has(key)) {
+      groupMap.set(key, { sums: labels.map(() => 0), counts: labels.map(() => 0) })
+    }
+    const g = groupMap.get(key)!
+    s.values.forEach((v, i) => {
+      if (v !== null) {
+        g.sums[i] += v
+        g.counts[i] += 1
+      }
+    })
+  })
+
+  return [...groupMap.entries()].map(([key, g], i) => ({
+    name: key,
+    type: 'line',
+    smooth: true,
+    // 该月组内一个变体都没数据 → null（断线）；有数据则求和（含真实的 0）
+    data: g.sums.map((v, i) => (g.counts[i] ? v : null)),
+    connectNulls: false,
+    symbolSize: 4,
+    itemStyle: { color: PALETTE[i % PALETTE.length] },
+  }))
+})
+
+/**
+ * 折线图配置。
+ *
+ * 只做一件事：把 allSeries 按显隐状态过滤后交给 ECharts。
+ * 聚合逻辑都在 allSeries 里，这里不要重复。
+ */
+const trendOption = computed(() => {
+  const t = trend.value
+  if (!t) return null
+
+  const series = allSeries.value.filter((s) => !hiddenSeries.value.has(s.name))
+
   return {
     tooltip: { trigger: 'axis' },
-    legend: { type: 'scroll', bottom: 0, textStyle: { fontSize: 11 } },
-    grid: { left: 48, right: 16, top: 16, bottom: 44 },
+    /**
+     * ⚠️ 不启用 ECharts 自带图例。
+     *
+     * 它固定占图表内一行高度（bottom 定位），而横轴月份标签是 40° 旋转的
+     * 长文本，两者在同一块区域会重叠（图例压在月份上）。
+     * 改用图表上方的自定义选择器（见模板），既避开横轴，
+     * 又能做「每页 5 个」的固定分页 —— 自带图例的 scroll 模式只能横向滚动。
+     *
+     * legend 关闭后必须给 grid.bottom 留够旋转标签的高度，否则标签被裁掉。
+     */
+    legend: { show: false },
+    grid: { left: 56, right: 16, top: 16, bottom: 64 },
     xAxis: {
       type: 'category',
-      data: labels,
-      axisLabel: { fontSize: 11, rotate: labels.length > 20 ? 40 : 0 },
+      data: t.dates,
+      axisLabel: { fontSize: 11, rotate: t.dates.length > 20 ? 40 : 0 },
     },
     yAxis: {
       type: 'value',
@@ -298,12 +357,21 @@ const trendOption = computed(() => {
   }
 })
 
-/** 变体简称：优先用属性值，没有就截 ASIN 尾号 */
+/**
+ * 变体简称：**ASIN + 属性值**。
+ *
+ * ⚠️ 不能只用属性值。实测 B0SEEDSSP0 这类商品每个变体只有一个独特 Size，
+ * 只拼属性值会让「不同变体」模式的图例变成 `240 GB / 480 GB / 960 GB` ——
+ * 与「不同 Size」模式**逐字相同**，用户看不出切换生效了。
+ * 原站图例是 `B09319MZJN(我) Stone Cloud` 这种「ASIN + 属性」格式。
+ *
+ * 属性值可能很长（如 "Happy Birthday - 1 Pair"），截断避免图例撑爆。
+ */
 function shortName(vAsin: string, ov: SalesOverview) {
   const v = ov.variants.find((x) => x.asin === vAsin)
   const vals = v ? Object.values(v.features) : []
-  if (vals.length) return vals.join(' / ')
-  return vAsin.slice(-4)
+  const attr = vals.join(' ').slice(0, 18)
+  return attr ? `${vAsin} ${attr}` : vAsin
 }
 
 /** AI 分析的输入。单独算出来而不是写在模板里，避免模板表达式的空值收窄问题 */
@@ -329,6 +397,69 @@ const totalBoughtLower = computed(() => {
   const sum = nums.reduce((a, c) => a + c, 0)
   return sum > 0 ? sum : null
 })
+
+/**
+ * 图表可选的系列名（图例项）。
+ *
+ * 「不同变体」模式下是各变体（实测有 124 个变体的商品），
+ * 属性维度下是各属性值（实测 5 色 × 3 码）。两者都可能超过一屏，
+ * 所以下面的选择器要分页。
+ */
+/**
+ * 图表可选的系列名（= chip 列表的数据源）。
+ *
+ * ⚠️ 读 allSeries **不是** trendOption。
+ * trendOption 已按 hiddenSeries 过滤过，读它会导致循环：
+ * 点掉一个系列 → 它被过滤 → 列表里也没了 → 用户点不回来。
+ */
+const seriesNames = computed<string[]>(() =>
+  allSeries.value.map((s) => String(s.name)),
+)
+
+/** 点击切换某系列的显隐 */
+function toggleSeries(name: string) {
+  const next = new Set(hiddenSeries.value)
+  if (next.has(name)) next.delete(name)
+  else next.add(name)
+  hiddenSeries.value = next
+}
+
+/** 全选 / 全不选当前页 */
+function toggleAllOnPage() {
+  const names = pagedSeriesNames.value
+  const next = new Set(hiddenSeries.value)
+  const allHidden = names.every((n) => next.has(n))
+  for (const n of names) {
+    if (allHidden) next.delete(n)
+    else next.add(n)
+  }
+  hiddenSeries.value = next
+}
+
+// ---- 选择器分页 ----
+// 每页固定 5 个。原站图例平铺，种类多时会挤成一团遮住横轴。
+const LEGEND_PAGE_SIZE = 5
+const legendPage = ref(1)
+
+const legendTotalPages = computed(() =>
+  Math.max(1, Math.ceil(seriesNames.value.length / LEGEND_PAGE_SIZE)),
+)
+
+const pagedSeriesNames = computed(() => {
+  const start = (legendPage.value - 1) * LEGEND_PAGE_SIZE
+  return seriesNames.value.slice(start, start + LEGEND_PAGE_SIZE)
+})
+
+/** 当前可见的系列数（没被打勾去掉的） */
+const visibleSeriesCount = computed(
+  () => seriesNames.value.length - hiddenSeries.value.size,
+)
+
+/** 切换维度时重置选择器状态：清空隐藏集、回到第 1 页 */
+function onDimensionChange() {
+  hiddenSeries.value = new Set()
+  legendPage.value = 1
+}
 </script>
 
 <template>
@@ -364,7 +495,15 @@ const totalBoughtLower = computed(() => {
       <div class="card">
         <div class="card-head">
           <h2 class="sec-title">销量趋势</h2>
-          <el-radio-group v-model="chartDimension" size="small">
+          <!--
+            @change 必须接 onDimensionChange：切维度后旧维度的系列名
+            会留在隐藏集里，导致新维度的线「天生是隐藏的」。
+          -->
+          <el-radio-group
+            v-model="chartDimension"
+            size="small"
+            @change="onDimensionChange"
+          >
             <el-radio-button
               v-for="d in dimensionOptions"
               :key="d.value"
@@ -374,9 +513,66 @@ const totalBoughtLower = computed(() => {
             </el-radio-button>
           </el-radio-group>
         </div>
+
+        <!--
+          系列选择器。
+          ⚠️ 放在图表**上方**，不用 ECharts 自带的 legend ——
+          自带 legend 固定占图表内一行高度（bottom 定位），
+          会与 40° 旋转的月份标签压在同一个区域上。
+          自定义选择器的另一个好处是能做「每页固定 5 个」的分页，
+          自带 legend 的 scroll 模式只能横向滚动，做不到分页。
+        -->
+        <div v-if="seriesNames.length" class="legend-bar">
+          <div class="legend-chips">
+            <button
+              v-for="n in pagedSeriesNames"
+              :key="n"
+              type="button"
+              class="chip"
+              :class="{ off: hiddenSeries.has(n) }"
+              :title="n + (hiddenSeries.has(n) ? '（已隐藏，点击显示）' : '（点击隐藏）')"
+              @click="toggleSeries(n)"
+            >
+              {{ n }}
+            </button>
+          </div>
+          <div class="legend-actions">
+            <span class="muted sm">
+              显示 {{ visibleSeriesCount }} / {{ seriesNames.length }}
+            </span>
+            <el-button link size="small" @click="toggleAllOnPage">
+              本页全选/全不选
+            </el-button>
+            <el-button
+              v-if="legendTotalPages > 1"
+              link
+              size="small"
+              :disabled="legendPage <= 1"
+              @click="legendPage--"
+            >
+              上一页
+            </el-button>
+            <span v-if="legendTotalPages > 1" class="muted sm">
+              {{ legendPage }} / {{ legendTotalPages }}
+            </span>
+            <el-button
+              v-if="legendTotalPages > 1"
+              link
+              size="small"
+              :disabled="legendPage >= legendTotalPages"
+              @click="legendPage++"
+            >
+              下一页
+            </el-button>
+          </div>
+        </div>
+
         <BaseChart :option="trendOption" :loading="loading" height="340px" />
         <p class="hint muted">
           纵轴为销量分档下界（原站销量以区间形式给出，如「200+」），缺数据的月份断线不补零。
+          <template v-if="seriesNames.length > 5">
+            系列较多，每页显示 5 个，用「上一页/下一页」翻看；点击系列名可单独隐藏。
+          </template>
         </p>
       </div>
 
@@ -729,4 +925,66 @@ const totalBoughtLower = computed(() => {
   height: 22px;
   padding: 0;
 }
+
+/* ---- 系列选择器（替代 ECharts 自带图例，见 trendOption 的说明）---- */
+.legend-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.legend-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/*
+  chip 用 button 而不是 div：可键盘聚焦，语义也正确。
+  下面把浏览器默认的按钮样式抹掉，只保留我们的外观。
+*/
+.chip {
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 1px 9px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--fill-2, #f5f5f5);
+  color: var(--text);
+  cursor: pointer;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+
+.chip:hover {
+  border-color: var(--primary);
+}
+
+/* 隐藏态：淡出 + 删除线，一眼能看出哪些被点掉了 */
+.chip.off {
+  opacity: 0.42;
+  text-decoration: line-through;
+}
+
+.legend-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.legend-actions :deep(.el-button) {
+  margin-left: 0;
+}
+
 </style>
