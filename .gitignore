@@ -38,3 +38,11 @@ __pycache__/
 
 # 调试期的页面截图，不随项目发布
 compete-view.png
+sales-deployed.png
+
+# 采集/调试的落盘中间产物。
+# ⚠️ 必须忽略：.tmp/ 里会出现 token.txt（登录态 JWT）和抓取响应原文，
+# 一旦进 git 历史就等于公开（删了历史里还在，见 scripts/_dsn.py 的同类教训）。
+# exports/ 是 export_asin_data.mjs 的输出，单个文件可达数 MB，属可再生成产物。
+.tmp/
+exports/
