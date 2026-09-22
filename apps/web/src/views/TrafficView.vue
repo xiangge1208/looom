@@ -115,25 +115,49 @@ const CHANNEL_META: Record<string, { name: string; color: string }> = {
 
 const channelKeys = Object.keys(CHANNEL_META)
 
-function stackStyle(row: any): Record<string, string> {
-  const segs = channelKeys
-    .map((k) => ({ k, r: row.channels?.[k]?.ratio ?? 0 }))
-    .filter((s) => s.r > 0)
-  const total = segs.reduce((a, c) => a + c.r, 0) || 1
-  return {
-    display: 'flex',
-    height: '12px',
-    borderRadius: '3px',
-    overflow: 'hidden',
-    background: '#f3f4f6',
-    width: '100%',
-  }
+/**
+ * 推荐专栏条宽：按**组内最大值**归一。
+ *
+ * 原先写的是 `ratio * 100 * 6`（乘 6 放大），结果 46.9% 就画成满条，
+ * 视觉和旁边的数字对不上 —— 这是在骗人。按最大值归一同样能拉开差距，
+ * 但最长的那条对应的确实是最大值，读者的直觉不会被误导。
+ */
+function recBarWidth(ratio: number | null): string {
+  const all = (data.value?.recommendColumns ?? []).map((c: any) => c.ratio ?? 0)
+  const max = Math.max(...all, 0)
+  if (max <= 0) return '0%'
+  return `${Math.max(ratio ? 3 : 0, ((ratio ?? 0) / max) * 100)}%`
 }
 
+/** 堆积条里某段的宽度：该渠道占**本行各渠道之和**的比例 */
 function segWidth(row: any, key: string): string {
-  const segs = channelKeys.map((k) => row.channels?.[k]?.ratio ?? 0)
-  const total = segs.reduce((a, c) => a + c, 0) || 1
+  const total = channelKeys.reduce((a, k) => a + (row.channels?.[k]?.ratio ?? 0), 0) || 1
   return `${((row.channels?.[key]?.ratio ?? 0) / total) * 100}%`
+}
+
+/** 段够宽才在条内写数字，否则文字会溢出到相邻段上 */
+function segLabel(row: any, key: string): string {
+  const r = row.channels?.[key]?.ratio ?? 0
+  const total = channelKeys.reduce((a, k) => a + (row.channels?.[k]?.ratio ?? 0), 0) || 1
+  return (r / total) * 100 >= 12 ? `${(r * 100).toFixed(1)}%` : ''
+}
+
+/**
+ * 分列模式的条宽：按**该列最大值**归一，不是按 100%。
+ *
+ * 各渠道占比普遍是个位数百分比（SBV 常在 1% 以下），按 100% 画所有条
+ * 都会短到看不出差别，条就失去意义了。按列内最大值归一后，
+ * 最强的那个变体占满格，其余按比例收缩 —— 一眼能看出谁在这个渠道更强。
+ */
+function barWidth(row: any, key: string): string {
+  const max = Math.max(
+    ...variantRows.value.map((r: any) => r.channels?.[key]?.ratio ?? 0),
+    0,
+  )
+  if (max <= 0) return '0%'
+  const r = row.channels?.[key]?.ratio ?? 0
+  // 有值就至少给 4% 宽度，否则 0.2% 这种会渲染成一条看不见的线
+  return `${Math.max(r > 0 ? 4 : 0, (r / max) * 100)}%`
 }
 </script>
 
@@ -193,18 +217,22 @@ function segWidth(row: any, key: string): string {
           description="该 Listing 暂无推荐专栏流量"
           :image-size="70"
         />
+        <!--
+          原先的两个问题：
+          1. 条宽乘了 6 倍放大（46.9% 画成满条），视觉与数字对不上；
+             改成按**组内最大值**归一 —— 同样能拉开差距，但不欺骗
+          2. 百分比 3 位小数（46.900%），精度远超实际意义，改 1 位
+        -->
         <div v-else class="rec-grid">
           <div v-for="c in data.recommendColumns" :key="c.recTitle" class="rec-item">
-            <div class="rec-name" :title="c.recTitle">{{ c.name }}</div>
+            <div class="rec-head">
+              <span class="rec-name" :title="c.recTitle">{{ c.name }}</span>
+              <span class="rec-pct">{{ ((c.ratio ?? 0) * 100).toFixed(1) }}%</span>
+            </div>
             <div class="rec-bar">
-              <div
-                class="rec-fill"
-                :style="{ width: `${Math.min(100, (c.ratio ?? 0) * 100 * 6)}%` }"
-              />
+              <div class="rec-fill" :style="{ width: recBarWidth(c.ratio) }" />
             </div>
-            <div class="rec-meta muted">
-              占比 {{ ((c.ratio ?? 0) * 100).toFixed(3) }}% · 活动 {{ c.campaignCount }}
-            </div>
+            <div class="rec-meta muted">{{ c.campaignCount }} 个广告活动</div>
           </div>
         </div>
         <p class="hint muted">
@@ -216,10 +244,19 @@ function segWidth(row: any, key: string): string {
       <div class="card">
         <div class="card-head">
           <h2 class="sec-title">分变体流量结构</h2>
-          <el-radio-group v-model="viewMode" size="small">
-            <el-radio-button value="stack">堆积图</el-radio-button>
-            <el-radio-button value="split">分列对比</el-radio-button>
-          </el-radio-group>
+          <div class="head-right">
+            <!-- 图例放表头一次，不在每行重复（原先每行 5 项、占两行高） -->
+            <div v-if="viewMode === 'stack'" class="legend">
+              <span v-for="k in channelKeys" :key="k" class="legend-item">
+                <i class="dot sm" :style="{ background: CHANNEL_META[k].color }" />
+                {{ CHANNEL_META[k].name }}
+              </span>
+            </div>
+            <el-radio-group v-model="viewMode" size="small">
+              <el-radio-button value="stack">堆积图</el-radio-button>
+              <el-radio-button value="split">分列对比</el-radio-button>
+            </el-radio-group>
+          </div>
         </div>
 
         <el-table :data="variantRows" stripe style="width: 100%">
@@ -230,47 +267,81 @@ function segWidth(row: any, key: string): string {
             </template>
           </el-table-column>
 
-          <!-- 堆积图模式：一根彩色条 -->
-          <el-table-column v-if="viewMode === 'stack'" label="自然-广告流量分布" min-width="240">
+          <!--
+            堆积图模式：一根彩色条，**数字写在段内**。
+            原先把 5 个「色点 + 名称 + 百分比」平铺在条下面，占两行且
+            要在图例与色段之间来回对照。现在够宽的段直接显示百分比，
+            窄段靠 hover 的 title 看 —— 行高省一半，也不用对照。
+          -->
+          <el-table-column v-if="viewMode === 'stack'" label="自然-广告流量分布" min-width="260">
             <template #default="{ row }">
-              <div :style="stackStyle(row)">
+              <div class="stack">
                 <div
                   v-for="k in channelKeys"
                   :key="k"
+                  class="stack-seg"
                   :style="{ width: segWidth(row, k), background: CHANNEL_META[k].color }"
                   :title="`${CHANNEL_META[k].name} ${((row.channels?.[k]?.ratio ?? 0) * 100).toFixed(1)}%`"
-                />
-              </div>
-              <div class="stack-labels">
-                <span v-for="k in channelKeys" :key="k" class="stack-label">
-                  <span class="dot sm" :style="{ background: CHANNEL_META[k].color }" />
-                  {{ CHANNEL_META[k].name }}
-                  {{ ((row.channels?.[k]?.ratio ?? 0) * 100).toFixed(1) }}%
-                </span>
+                >
+                  {{ segLabel(row, k) }}
+                </div>
               </div>
             </template>
           </el-table-column>
 
-          <!-- 分列模式：每渠道一列 -->
+          <!--
+            分列模式：每渠道一列，格内是「条 + 数字」而不是裸百分比。
+            裸数字要靠读者逐行比大小；带条能一眼看出哪个变体在哪个渠道更强
+            （原站也是条+数字，见 SIF_UI_AUDIT §8c.2）。
+            条宽按**列内最大值**归一，不是按 100% —— 渠道占比普遍是个位数
+            百分比，按 100% 画的话所有条都短得看不出差别。
+          -->
           <template v-else>
             <el-table-column
               v-for="k in channelKeys"
               :key="k"
               :label="CHANNEL_META[k].name"
-              width="104"
+              min-width="108"
             >
               <template #default="{ row }">
-                {{ ((row.channels?.[k]?.ratio ?? 0) * 100).toFixed(1) }}%
+                <div class="cell-metric">
+                  <div class="cell-bar">
+                    <div
+                      class="cell-fill"
+                      :style="{
+                        width: barWidth(row, k),
+                        background: CHANNEL_META[k].color,
+                      }"
+                    />
+                  </div>
+                  <span class="cell-num">
+                    {{ ((row.channels?.[k]?.ratio ?? 0) * 100).toFixed(1) }}%
+                  </span>
+                </div>
               </template>
             </el-table-column>
           </template>
 
-          <el-table-column label="总流量得分" width="112">
+          <el-table-column label="总流量得分" width="112" align="right">
             <template #default="{ row }">
               <span class="mono">{{ (row.total ?? 0).toLocaleString() }}</span>
             </template>
           </el-table-column>
         </el-table>
+
+        <!--
+          必须说明条宽口径。分列模式下条按**列内最大值**归一，
+          所以 SBV 列里 0.8% 也会画成满条 —— 不说清会被误读成「占 80%」。
+        -->
+        <p class="hint muted">
+          <template v-if="viewMode === 'split'">
+            条长按<strong>该列最大值</strong>归一（便于同列横向比较），
+            不代表占满 100%，实际占比看数字。
+          </template>
+          <template v-else>
+            条内百分比为该变体各流量渠道的构成比；窄段的数值悬停可见。
+          </template>
+        </p>
       </div>
 
       <!-- AI 插入点 3：流量构成诊断 -->
@@ -376,12 +447,28 @@ function segWidth(row: any, key: string): string {
   gap: 14px;
 }
 
+/* 名称与百分比同一行：数字紧邻条，不用视线在两行之间跳 */
+.rec-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
 .rec-name {
   font-size: 13px;
-  margin-bottom: 6px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.rec-pct {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-900);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .rec-bar {
@@ -402,19 +489,84 @@ function segWidth(row: any, key: string): string {
   font-size: 11.5px;
 }
 
-.stack-labels {
+/* ---- 分变体流量结构 ---- */
+
+.head-right {
   display: flex;
+  align-items: center;
+  gap: 14px;
   flex-wrap: wrap;
+}
+
+/* 图例只在表头出现一次 */
+.legend {
+  display: flex;
   gap: 10px;
-  margin-top: 6px;
-  font-size: 11px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
   color: var(--ink-500);
 }
 
-.stack-label {
+.legend-item {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+/* 堆积条：数字写在段内，高度够容纳文字 */
+.stack {
+  display: flex;
+  height: 18px;
+  width: 100%;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--ink-100);
+}
+
+.stack-seg {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10.5px;
+  line-height: 1;
+  color: #fff;
+  /* 彩色底上的白字加一点阴影，浅色段（SBV 的黄）才读得清 */
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.45);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: width 0.2s;
+}
+
+/* 分列模式的单元格：条 + 数字 */
+.cell-metric {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.cell-bar {
+  flex: 1;
+  min-width: 26px;
+  height: 6px;
+  background: var(--ink-100);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.cell-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.2s;
+}
+
+.cell-num {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-700);
+  flex-shrink: 0;
+  min-width: 40px;
+  text-align: right;
 }
 
 .mono {
