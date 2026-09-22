@@ -56,6 +56,36 @@ export interface ChannelItem {
   changeRatio: number | null
 }
 
+/** 分变体/分属性的流量结构表格 */
+export interface TrafficVariantRow {
+  /** 行标识：变体模式下是 ASIN，属性模式下是属性取值 */
+  key: string
+  /** 仅变体模式有 */
+  asin?: string
+  /** 仅属性模式有 */
+  dimensionValue?: string
+  memberCount?: number
+  memberAsins?: string[]
+  img: string | null
+  title?: string | null
+  features?: Record<string, string>
+  total: number
+  /** 各渠道得分 + 占**本行 total** 的构成比（堆积图用） */
+  channels: Record<string, { score: number; ratio: number | null }>
+  /** 本行 total ÷ 全部行 total 之和 */
+  totalShare: number | null
+  /** 各渠道的**列内占比**：本行该渠道 ÷ 全部行该渠道之和（原站表头口径） */
+  channelShares: Record<string, number | null>
+}
+
+export interface TrafficVariants {
+  dimension: string
+  /** 该商品可用的属性维度，如 ["Color","Size"] */
+  dimensions: string[]
+  timePieceValue?: string
+  rows: TrafficVariantRow[]
+}
+
 export interface TrafficStructure {
   asin: string
   country: string
@@ -135,7 +165,7 @@ export const businessApi = {
   },
 
   trafficVariants(asin: string, country = dc(), dimension?: string) {
-    return request<{ dimension: string; rows: any[] }>({
+    return request<TrafficVariants>({
       url: '/business/traffic/variants',
       params: { asin, country, dimension },
     })

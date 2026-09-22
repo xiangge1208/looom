@@ -52,17 +52,40 @@ export class TrafficService {
       [country, month, ...asins],
     )
 
-    // 用渠道合计重算占比（原站的占比也是 0-1 小数，保持一致）
-    const totalScore = rows
-      .filter((r: any) => r.channel !== 'total' && r.channel !== 'ad' && r.channel !== 'allSp' && r.channel !== 'allSb')
-      .reduce((acc: number, r: any) => acc + Number(r.score ?? 0), 0)
+    /**
+     * 重算占比（原站的占比也是 0-1 小数，保持一致）。
+     *
+     * ⚠️ 两个区块的**分母不同**，不能共用一个 totalScore：
+     *
+     *   区块 1「自然-广告」→ 分母 = 叶子渠道合计（自然 + 各广告）
+     *     实测原站 自然 83% / 广告 17%，两者相加 100%
+     *
+     *   区块 2「广告细分」→ 分母 = **广告流量合计**，不含自然
+     *     实测原站 SP常规 78% / SP推荐 7% / SB常规 7% / SBV 8%，四项相加 100%
+     *     若沿用叶子合计做分母，SP 会算成 6%（8,069 ÷ 125,499）——
+     *     数量级就错了，页面上四项加起来只有 8%，读者无法理解。
+     */
+    const LEAF_CH = ['nf', 'sp', 'spRec', 'sb', 'sbv']
+    const AD_CH = ['sp', 'spRec', 'sb', 'sbv']
+    const sumOf = (codes: string[]) =>
+      rows
+        .filter((r: any) => codes.includes(r.channel))
+        .reduce((acc: number, r: any) => acc + Number(r.score ?? 0), 0)
+
+    const leafScore = sumOf(LEAF_CH)
+    const adScore = sumOf(AD_CH)
     for (const r of rows) {
       const sc = Number(r.score ?? 0)
-      r.score_ratio = totalScore > 0 ? sc / totalScore : 0
+      // 广告子渠道按广告合计归一，其余（自然/total/ad）按叶子合计归一
+      const denom = AD_CH.includes(r.channel) ? adScore : leafScore
+      r.score_ratio = denom > 0 ? sc / denom : 0
       r.score_change = null
       r.score_change_ratio = null
       r.contri_change_ratio = null
     }
+    // 「广告流量」这一行属于区块 1，分母必须是叶子合计（与自然流量同分母才能相加成 100%）
+    const adRow: any = rows.find((r: any) => r.channel === 'ad')
+    if (adRow) adRow.score_ratio = leafScore > 0 ? adScore / leafScore : 0
 
     const byChannel = new Map(rows.map((r: any) => [r.channel, r]))
     const num = (v: any) => (v === null || v === undefined ? null : Number(v))
@@ -189,7 +212,7 @@ SUM(p.keyword_cnt) AS keyword_cnt
       byAsin.set(r.asin, cur)
     }
 
-    // 变体属性，用于维度切换时分组
+    // 变体属性，用于维度切换时分组；同时取图片/标题给表格首列展示
     const features = await this.db.query<any>(
       `SELECT asin, feature_name, feature_value FROM dim_asin_feature
         WHERE country = ? AND asin IN (${ph}) AND feature_value IS NOT NULL`,
@@ -202,20 +225,119 @@ SUM(p.keyword_cnt) AS keyword_cnt
       featMap.set(f.asin, cur)
     }
 
-    const result = asins.map((a: string) => {
+    const metaRows = await this.db.query<any>(
+      `SELECT asin, img, title FROM dim_asin WHERE country = ? AND asin IN (${ph})`,
+      [country, ...asins],
+    )
+    const metaMap = new Map<string, any>(metaRows.map((r: any) => [r.asin, r]))
+
+    /** 该商品实际有哪些属性维度（如 ["Color","Size"]），供前端生成 tab */
+    const dimensions = [
+      ...new Set(features.map((f: any) => f.feature_name as string)),
+    ].sort()
+
+    const dim = dimension ?? 'variant'
+
+    /**
+     * 先按变体算出基础行，再决定是否按属性维度聚合。
+     *
+     * ⚠️ channels[ch].ratio 是上游的 score_ratio = 该渠道占**本变体 total** 的比例
+     * （total 行恒为 1.0），**不是**原站表头那些「SP(常规)流量占比」。
+     * 实测原站第 1 行 B01NBNDC1T「自然流量占比 43%」，而
+     *   本变体 nf 49,583.6 ÷ 全组 nf 合计 115,485.3 = 42.9%
+     * 两者吻合 —— 所以原站那一列是**列内归一**：该行该渠道 ÷ 全组该渠道之和。
+     * 下面的 shareOf 就是这个口径，与 score_ratio 分开返回，不要混用。
+     */
+    const baseRows = asins.map((a: string) => {
       const hit = byAsin.get(a)
+      const meta = metaMap.get(a)
       return {
+        key: a,
         asin: a,
+        img: meta?.img ?? null,
+        title: meta?.title ?? null,
         features: featMap.get(a) ?? {},
- total: hit?.total ?? 0,
+        total: hit?.total ?? 0,
         channels: LEAF.reduce((acc: any, ch) => {
-   acc[ch] = hit?.channels[ch] ?? { score: 0, ratio: 0 }
+          acc[ch] = hit?.channels[ch] ?? { score: 0, ratio: 0 }
           return acc
- }, {}),
+        }, {}),
       }
     })
 
-    return { dimension: dimension ?? 'variant', timePieceValue: month, rows: result }
+    // 按属性维度聚合：同一取值（如同为 White）的变体，各渠道得分**求和**
+    let outRows: any[] = baseRows
+    if (dim !== 'variant') {
+      const groups = new Map<string, any>()
+      for (const r of baseRows) {
+        const val = r.features[dim]
+        // 该维度无取值的变体不并入任何分组，避免出现一个空标签的行
+        if (!val) continue
+        let g = groups.get(val)
+        if (!g) {
+          g = {
+            key: val,
+            dimensionValue: val,
+            // 组内第一个变体的图作代表（同色各尺码主图基本一致）
+            img: r.img,
+            memberCount: 0,
+            memberAsins: [] as string[],
+            total: 0,
+            channels: LEAF.reduce((acc: any, ch) => {
+              acc[ch] = { score: 0, ratio: 0 }
+              return acc
+            }, {}),
+          }
+          groups.set(val, g)
+        }
+        if (!g.img) g.img = r.img
+        g.memberCount += 1
+        g.memberAsins.push(r.asin)
+        g.total += r.total
+        for (const ch of LEAF) g.channels[ch].score += r.channels[ch].score
+      }
+      // 聚合后各渠道占「本组 total」的比例要重算，不能沿用成员的 score_ratio
+      for (const g of groups.values()) {
+        for (const ch of LEAF) {
+          g.channels[ch].ratio = g.total > 0 ? g.channels[ch].score / g.total : 0
+        }
+      }
+      outRows = [...groups.values()]
+    }
+
+    /**
+     * 列内占比：该行该渠道 ÷ 所有行该渠道之和（原站表头「XX流量占比」的口径）。
+     * 分母为 0 时给 null 而不是 0 —— 「该渠道整组都没有流量」与「本行占 0%」
+     * 是两件事，前端要能区分着渲染（原站显示为 0 而非 0%）。
+     */
+    const colSum = (pick: (r: any) => number) =>
+      outRows.reduce((a, r) => a + (pick(r) || 0), 0)
+
+    const totalSum = colSum((r) => r.total)
+    const chSums: Record<string, number> = {}
+    for (const ch of LEAF) chSums[ch] = colSum((r) => r.channels[ch].score)
+
+    const withShares = outRows.map((r) => ({
+      ...r,
+      /** 总流量占比：本行 total ÷ 全部行 total 之和 */
+      totalShare: totalSum > 0 ? r.total / totalSum : null,
+      /** 各渠道的列内占比，与 channels[ch].ratio（行内构成比）含义不同 */
+      channelShares: LEAF.reduce((acc: any, ch) => {
+        acc[ch] = chSums[ch] > 0 ? r.channels[ch].score / chSums[ch] : null
+        return acc
+      }, {}),
+    }))
+
+    // 默认按总流量降序（原站默认也是这个排序）
+    withShares.sort((a, b) => (b.total ?? 0) - (a.total ?? 0))
+
+    return {
+      dimension: dim,
+      /** 该商品可用的属性维度，前端据此生成「不同 Color / 不同 Size」tab */
+      dimensions,
+      timePieceValue: month,
+      rows: withShares,
+    }
   }
 
   /**
