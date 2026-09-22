@@ -238,17 +238,30 @@ function sortArrow(key: 'price' | 'bought' | 'traffic' | 'score') {
   return sortAsc.value ? '↑' : '↓'
 }
 
+/** 系列定义：图表用 data/color，图例 chip 用 img/asin/attr。两者同一个数据源 */
+interface SeriesDef {
+  /** 系列唯一标识，同时作为 ECharts series.name 和显隐集合的 key */
+  name: string
+  /** 「不同变体」模式下是该变体的 ASIN；属性聚合模式下为 null（一组含多个 ASIN） */
+  asin: string | null
+  /** 属性值文案，如 "Stone Cloud"、"1 Pair" */
+  attr: string
+  /** 缩略图。属性聚合模式取组内**第一个**变体的图作代表 */
+  img: string | null
+  color: string
+  data: (number | null)[]
+}
+
 /**
- * 全部系列（**未经过显隐过滤**）。
+ * 全部系列定义（**未经过显隐与分页过滤**）。
  *
- * ⚠️ 必须与 trendOption 分开算。
- * 曾经让 seriesNames 直接读 trendOption.series，结果是循环依赖：
- * 点掉一个系列 → 它被过滤掉 → seriesNames 里也没了 →
- * chip 从列表消失 → 用户再也点不回来（实测计数从 6/6 变成 4/5）。
- *
- * 所以这里保留全量，trendOption 才做过滤。
+ * ⚠️ 必须与 trendOption 分开算，链条只能是单向的
+ * seriesDefs → pagedDefs → visibleDefs → trendOption。
+ * 曾经让 chip 列表直接读 trendOption.series，结果是循环依赖：
+ * 点掉一个系列 → 它被过滤掉 → chip 列表里也没了 →
+ * 用户再也点不回来（实测计数从 6/6 变成 4/5）。
  */
-const allSeries = computed<any[]>(() => {
+const seriesDefs = computed<SeriesDef[]>(() => {
   const t = trend.value
   const ov = overview.value
   if (!t || !ov) return []
@@ -257,17 +270,19 @@ const allSeries = computed<any[]>(() => {
   const labels = t.dates
 
   if (chartDimension.value === 'variant') {
-    return t.series.map((s, i) => ({
-      name: shortName(s.asin, ov),
-      type: 'line',
-      smooth: true,
-      // 缺月不要补 0（会被误读成销量归零），留 null 让 ECharts 断线
-      data: s.values,
-      connectNulls: false,
-      symbolSize: 4,
-      // 颜色按**原始下标**分配，过滤后不重排 —— 隐藏再显示时颜色不跳变
-      itemStyle: { color: PALETTE[i % PALETTE.length] },
-    }))
+    return t.series.map((s, i) => {
+      const v = ov.variants.find((x) => x.asin === s.asin)
+      return {
+        name: shortName(s.asin, ov),
+        asin: s.asin,
+        attr: attrOf(s.asin, ov),
+        img: v?.img ?? null,
+        // 颜色按**原始下标**分配，过滤后不重排 —— 隐藏再显示时颜色不跳变
+        color: PALETTE[i % PALETTE.length],
+        // 缺月不要补 0（会被误读成销量归零），留 null 让 ECharts 断线
+        data: s.values,
+      }
+    })
   }
 
   /**
@@ -286,15 +301,25 @@ const allSeries = computed<any[]>(() => {
    * 前者要留 null 让它断线，后者是真实的 0（当月确实没卖）。
    * 直接判 `sum === 0 → null` 会把真实的零销量画成断线。
    */
-  const groupMap = new Map<string, { sums: number[]; counts: number[] }>()
+  const groupMap = new Map<
+    string,
+    { sums: number[]; counts: number[]; img: string | null }
+  >()
   t.series.forEach((s) => {
-    const feat = ov.variants.find((v) => v.asin === s.asin)?.features ?? {}
-    const key = feat[chartDimension.value]
+    const variant = ov.variants.find((v) => v.asin === s.asin)
+    const key = variant?.features?.[chartDimension.value]
     if (!key) return
     if (!groupMap.has(key)) {
-      groupMap.set(key, { sums: labels.map(() => 0), counts: labels.map(() => 0) })
+      groupMap.set(key, {
+        sums: labels.map(() => 0),
+        counts: labels.map(() => 0),
+        // 组内第一个变体的图作代表：同 Color 的各尺码主图基本一致，
+        // 展示其中一张足以让用户认出这是哪个颜色
+        img: variant?.img ?? null,
+      })
     }
     const g = groupMap.get(key)!
+    if (!g.img) g.img = variant?.img ?? null
     s.values.forEach((v, i) => {
       if (v !== null) {
         g.sums[i] += v
@@ -305,27 +330,36 @@ const allSeries = computed<any[]>(() => {
 
   return [...groupMap.entries()].map(([key, g], i) => ({
     name: key,
-    type: 'line',
-    smooth: true,
+    // 属性聚合模式下一条线对应多个 ASIN，没有单一 ASIN 可标
+    asin: null,
+    attr: key,
+    img: g.img,
+    color: PALETTE[i % PALETTE.length],
     // 该月组内一个变体都没数据 → null（断线）；有数据则求和（含真实的 0）
-    data: g.sums.map((v, i) => (g.counts[i] ? v : null)),
-    connectNulls: false,
-    symbolSize: 4,
-    itemStyle: { color: PALETTE[i % PALETTE.length] },
+    data: g.sums.map((v, idx) => (g.counts[idx] ? v : null)),
   }))
 })
 
 /**
  * 折线图配置。
  *
- * 只做一件事：把 allSeries 按显隐状态过滤后交给 ECharts。
- * 聚合逻辑都在 allSeries 里，这里不要重复。
+ * 只做一件事：把 visibleDefs 转成 ECharts series。
+ * 聚合逻辑在 seriesDefs、筛选逻辑在 visibleDefs，这里不要重复。
  */
 const trendOption = computed(() => {
   const t = trend.value
   if (!t) return null
 
-  const series = allSeries.value.filter((s) => !hiddenSeries.value.has(s.name))
+  const series = visibleDefs.value.map((d) => ({
+    name: d.name,
+    type: 'line',
+    smooth: true,
+    data: d.data,
+    connectNulls: false,
+    symbolSize: 4,
+    itemStyle: { color: d.color },
+    lineStyle: { color: d.color },
+  }))
 
   return {
     tooltip: { trigger: 'axis' },
@@ -357,6 +391,12 @@ const trendOption = computed(() => {
   }
 })
 
+/** 变体的属性值文案，如 "Stone Cloud"。过长截断，避免 chip 撑爆一行 */
+function attrOf(vAsin: string, ov: SalesOverview) {
+  const v = ov.variants.find((x) => x.asin === vAsin)
+  return v ? Object.values(v.features).join(' ').slice(0, 18) : ''
+}
+
 /**
  * 变体简称：**ASIN + 属性值**。
  *
@@ -365,12 +405,10 @@ const trendOption = computed(() => {
  * 与「不同 Size」模式**逐字相同**，用户看不出切换生效了。
  * 原站图例是 `B09319MZJN(我) Stone Cloud` 这种「ASIN + 属性」格式。
  *
- * 属性值可能很长（如 "Happy Birthday - 1 Pair"），截断避免图例撑爆。
+ * 这个字符串同时是显隐集合的 key，所以必须唯一 —— 带上 ASIN 正好保证唯一。
  */
 function shortName(vAsin: string, ov: SalesOverview) {
-  const v = ov.variants.find((x) => x.asin === vAsin)
-  const vals = v ? Object.values(v.features) : []
-  const attr = vals.join(' ').slice(0, 18)
+  const attr = attrOf(vAsin, ov)
   return attr ? `${vAsin} ${attr}` : vAsin
 }
 
@@ -398,22 +436,32 @@ const totalBoughtLower = computed(() => {
   return sum > 0 ? sum : null
 })
 
+// ---- 分页 ----
+// 每页 5 条。原站也是 5 条一页：变体数常达上百（实测有 124 个变体的商品），
+// 全画出来是一团糊线，既看不出趋势也分不清颜色。
+const LEGEND_PAGE_SIZE = 5
+const legendPage = ref(1)
+
+const legendTotalPages = computed(() =>
+  Math.max(1, Math.ceil(seriesDefs.value.length / LEGEND_PAGE_SIZE)),
+)
+
 /**
- * 图表可选的系列名（图例项）。
+ * 当前页的系列定义。
  *
- * 「不同变体」模式下是各变体（实测有 124 个变体的商品），
- * 属性维度下是各属性值（实测 5 色 × 3 码）。两者都可能超过一屏，
- * 所以下面的选择器要分页。
+ * ⚠️ 分页是**图表级**的，不只是图例级。
+ * 原先的实现把全部系列都塞给 ECharts、只让图例分页，于是 16 个变体
+ * 同时画在图上（用户截图里那团糊线），翻页只换了下面 5 个 chip 的文字，
+ * 图一点没变 —— 看起来像「翻页没生效」。原站是每页只画 5 条。
  */
-/**
- * 图表可选的系列名（= chip 列表的数据源）。
- *
- * ⚠️ 读 allSeries **不是** trendOption。
- * trendOption 已按 hiddenSeries 过滤过，读它会导致循环：
- * 点掉一个系列 → 它被过滤 → 列表里也没了 → 用户点不回来。
- */
-const seriesNames = computed<string[]>(() =>
-  allSeries.value.map((s) => String(s.name)),
+const pagedDefs = computed(() => {
+  const start = (legendPage.value - 1) * LEGEND_PAGE_SIZE
+  return seriesDefs.value.slice(start, start + LEGEND_PAGE_SIZE)
+})
+
+/** 真正进图表的系列：当前页 ∩ 未被点掉 */
+const visibleDefs = computed(() =>
+  pagedDefs.value.filter((d) => !hiddenSeries.value.has(d.name)),
 )
 
 /** 点击切换某系列的显隐 */
@@ -426,36 +474,16 @@ function toggleSeries(name: string) {
 
 /** 全选 / 全不选当前页 */
 function toggleAllOnPage() {
-  const names = pagedSeriesNames.value
   const next = new Set(hiddenSeries.value)
-  const allHidden = names.every((n) => next.has(n))
-  for (const n of names) {
-    if (allHidden) next.delete(n)
-    else next.add(n)
+  const allHidden = pagedDefs.value.every((d) => next.has(d.name))
+  for (const d of pagedDefs.value) {
+    if (allHidden) next.delete(d.name)
+    else next.add(d.name)
   }
   hiddenSeries.value = next
 }
 
-// ---- 选择器分页 ----
-// 每页固定 5 个。原站图例平铺，种类多时会挤成一团遮住横轴。
-const LEGEND_PAGE_SIZE = 5
-const legendPage = ref(1)
-
-const legendTotalPages = computed(() =>
-  Math.max(1, Math.ceil(seriesNames.value.length / LEGEND_PAGE_SIZE)),
-)
-
-const pagedSeriesNames = computed(() => {
-  const start = (legendPage.value - 1) * LEGEND_PAGE_SIZE
-  return seriesNames.value.slice(start, start + LEGEND_PAGE_SIZE)
-})
-
-/** 当前可见的系列数（没被打勾去掉的） */
-const visibleSeriesCount = computed(
-  () => seriesNames.value.length - hiddenSeries.value.size,
-)
-
-/** 切换维度时重置选择器状态：清空隐藏集、回到第 1 页 */
+/** 切换维度时重置状态：清空隐藏集、回到第 1 页 */
 function onDimensionChange() {
   hiddenSeries.value = new Set()
   legendPage.value = 1
@@ -515,63 +543,73 @@ function onDimensionChange() {
         </div>
 
         <!--
-          系列选择器。
+          自定义图例。
           ⚠️ 放在图表**上方**，不用 ECharts 自带的 legend ——
           自带 legend 固定占图表内一行高度（bottom 定位），
           会与 40° 旋转的月份标签压在同一个区域上。
-          自定义选择器的另一个好处是能做「每页固定 5 个」的分页，
-          自带 legend 的 scroll 模式只能横向滚动，做不到分页。
+          自带 legend 也放不了缩略图，而原站图例是「色条 + 图片 + ASIN + 属性」。
         -->
-        <div v-if="seriesNames.length" class="legend-bar">
-          <div class="legend-chips">
-            <button
-              v-for="n in pagedSeriesNames"
-              :key="n"
-              type="button"
-              class="chip"
-              :class="{ off: hiddenSeries.has(n) }"
-              :title="n + (hiddenSeries.has(n) ? '（已隐藏，点击显示）' : '（点击隐藏）')"
-              @click="toggleSeries(n)"
-            >
-              {{ n }}
-            </button>
-          </div>
-          <div class="legend-actions">
-            <span class="muted sm">
-              显示 {{ visibleSeriesCount }} / {{ seriesNames.length }}
+        <div v-if="seriesDefs.length" class="legend-bar">
+          <button
+            v-for="d in pagedDefs"
+            :key="d.name"
+            type="button"
+            class="chip"
+            :class="{ off: hiddenSeries.has(d.name) }"
+            :title="d.name + (hiddenSeries.has(d.name) ? '（已隐藏，点击显示）' : '（点击隐藏）')"
+            @click="toggleSeries(d.name)"
+          >
+            <!-- 色条与折线同色，把图例项和图上的线对应起来 -->
+            <i class="chip-line" :style="{ background: d.color }" />
+            <img v-if="d.img" :src="d.img" class="chip-img" alt="" />
+            <!-- 没图时留同尺寸占位，否则有图/无图的 chip 高度不齐 -->
+            <span v-else class="chip-img chip-img-ph" />
+            <span class="chip-text">
+              <span class="chip-asin mono">{{ d.asin ?? d.attr }}</span>
+              <span v-if="d.asin && d.attr" class="chip-attr">{{ d.attr }}</span>
             </span>
-            <el-button link size="small" @click="toggleAllOnPage">
-              本页全选/全不选
-            </el-button>
-            <el-button
-              v-if="legendTotalPages > 1"
-              link
-              size="small"
-              :disabled="legendPage <= 1"
-              @click="legendPage--"
-            >
-              上一页
-            </el-button>
-            <span v-if="legendTotalPages > 1" class="muted sm">
-              {{ legendPage }} / {{ legendTotalPages }}
-            </span>
-            <el-button
-              v-if="legendTotalPages > 1"
-              link
-              size="small"
-              :disabled="legendPage >= legendTotalPages"
-              @click="legendPage++"
-            >
-              下一页
-            </el-button>
-          </div>
+          </button>
         </div>
 
         <BaseChart :option="trendOption" :loading="loading" height="340px" />
+
+        <!--
+          翻页放图表**下方居中**（对齐原站）。
+          放上面时它和维度切换、图例挤在一起，看不出是在给图表翻页。
+        -->
+        <div v-if="seriesDefs.length" class="chart-pager">
+          <el-button
+            v-if="legendTotalPages > 1"
+            size="small"
+            :disabled="legendPage <= 1"
+            @click="legendPage--"
+          >
+            上一页
+          </el-button>
+          <span v-if="legendTotalPages > 1" class="pager-at">
+            {{ legendPage }} / {{ legendTotalPages }}
+          </span>
+          <el-button
+            v-if="legendTotalPages > 1"
+            size="small"
+            :disabled="legendPage >= legendTotalPages"
+            @click="legendPage++"
+          >
+            下一页
+          </el-button>
+          <span class="muted sm">
+            本页 {{ visibleDefs.length }} / {{ pagedDefs.length }} 条，共
+            {{ seriesDefs.length }} 个{{ chartDimension === 'variant' ? '变体' : '取值' }}
+          </span>
+          <el-button link size="small" @click="toggleAllOnPage">
+            本页全选/全不选
+          </el-button>
+        </div>
+
         <p class="hint muted">
           纵轴为销量分档下界（原站销量以区间形式给出，如「200+」），缺数据的月份断线不补零。
-          <template v-if="seriesNames.length > 5">
-            系列较多，每页显示 5 个，用「上一页/下一页」翻看；点击系列名可单独隐藏。
+          <template v-if="seriesDefs.length > LEGEND_PAGE_SIZE">
+            每页画 {{ LEGEND_PAGE_SIZE }} 条，用图表下方的翻页查看其余；点击上方图例可单独隐藏。
           </template>
         </p>
       </div>
@@ -926,23 +964,15 @@ function onDimensionChange() {
   padding: 0;
 }
 
-/* ---- 系列选择器（替代 ECharts 自带图例，见 trendOption 的说明）---- */
+/* ---- 自定义图例（替代 ECharts 自带图例，见 trendOption 的说明）---- */
+/* 居中：只有 5 项，靠左会在宽屏上留一大片空白 */
 .legend-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  align-items: stretch;
+  justify-content: center;
+  gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border);
-}
-
-.legend-chips {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-width: 0;
+  margin-bottom: 8px;
 }
 
 /*
@@ -950,41 +980,91 @@ function onDimensionChange() {
   下面把浏览器默认的按钮样式抹掉，只保留我们的外观。
 */
 .chip {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font: inherit;
-  font-size: 12px;
-  line-height: 1.6;
-  padding: 1px 9px;
-  border-radius: 11px;
+  padding: 4px 10px 4px 6px;
+  border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--fill-2, #f5f5f5);
   color: var(--text);
   cursor: pointer;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  transition: opacity 0.15s;
+  text-align: left;
+  transition: opacity 0.15s, border-color 0.15s;
 }
 
 .chip:hover {
   border-color: var(--primary);
 }
 
-/* 隐藏态：淡出 + 删除线，一眼能看出哪些被点掉了 */
+/* 隐藏态：整块淡出。不用删除线 —— 两行文字加删除线糊成一团 */
 .chip.off {
-  opacity: 0.42;
-  text-decoration: line-through;
+  opacity: 0.4;
 }
 
-.legend-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+/* 与折线同色的短横，代替 ECharts 图例的色块 */
+.chip-line {
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
   flex-shrink: 0;
 }
 
-.legend-actions :deep(.el-button) {
+.chip-img {
+  width: 26px;
+  height: 26px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+/* 无图占位：留同样的位子，保证有图/无图的 chip 等高 */
+.chip-img-ph {
+  background: var(--ink-100, #f0f0f0);
+}
+
+.chip-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+  min-width: 0;
+}
+
+.chip-asin {
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.chip-attr {
+  font-size: 11px;
+  color: var(--ink-500);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 110px;
+}
+
+/* 翻页条：图表下方居中（对齐原站） */
+.chart-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.pager-at {
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-700);
+}
+
+.chart-pager :deep(.el-button--small) {
   margin-left: 0;
 }
+
 
 </style>
