@@ -99,10 +99,15 @@ SELECT keyword, country, stat_week,
        cpa_start, cpa_median, cpa_end, created_at
 FROM looom.fact_keyword_acos_estimate_v1;
 
--- 1.4 旧表保留待人工确认后再删。
---   确认方式：SELECT COUNT(*) 两表应同为 33,019；
---   且 SELECT COUNT(DISTINCT CONCAT(match_type,bid_strategy)) = 6。
--- DROP TABLE looom.fact_keyword_acos_estimate_v1;   ← 核对无误后手动执行
+-- 1.4 旧表已于 2026-09-22 删除。
+--
+-- 删前的核对（行数相同不足以证明内容相同，所以做了逐行比对）：
+--   把旧表按上面 §1.3 的拆维口径投影，与新表做**双向差集**，两边都必须是 0 行：
+--     SELECT COUNT(*) FROM (旧表投影 EXCEPT 新表) t;   -- 实测 0
+--     SELECT COUNT(*) FROM (新表 EXCEPT 旧表投影) t;   -- 实测 0
+--   另确认全代码库已无 fact_keyword_acos_estimate_v1 的引用。
+--   删前导出 CSV 备份（33,019 行）留档。
+DROP TABLE IF EXISTS looom.fact_keyword_acos_estimate_v1;
 
 
 -- =====================================================================
@@ -383,5 +388,5 @@ COMMENT '用户关注/监控/订阅。主键即业务唯一键（原先靠应用
 DISTRIBUTED BY HASH(user_id) BUCKETS 2
 PROPERTIES ("replication_num" = "1", "enable_unique_key_merge_on_write" = "true");
 
--- 旧表是空的，确认后即可删：
--- DROP TABLE looom.user_favorites_old_pk;
+-- 旧表已于 2026-09-22 删除（删前实测 0 行，无数据可丢；全代码库亦无引用）。
+DROP TABLE IF EXISTS looom.user_favorites_old_pk;
