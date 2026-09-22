@@ -117,6 +117,22 @@ const EVENT_COLORS: Record<string, string> = {
   priceChange: '',
   coupon: 'danger',
 }
+
+/**
+ * 事件详情的展示文本。
+ *
+ * 后端 safeJson 对 event_detail 做「能解析就给对象，不能就原样给字符串」，
+ * 而库里大多是人读的短句（如 `16.99 → 13.59`、`在投活动数: 2 → 1 个`）。
+ * 早先这里无条件 JSON.stringify，把这些纯文本渲染成了 `"16.99 → 13.59"` ——
+ * 多出来的引号是 stringify 加的，不是数据里的。
+ * 所以字符串直接给，只有对象/数组才序列化。
+ */
+function formatDetail(detail: unknown): string {
+  if (detail === null || detail === undefined) return '—'
+  if (typeof detail === 'string') return detail
+  if (typeof detail === 'number' || typeof detail === 'boolean') return String(detail)
+  return JSON.stringify(detail)
+}
 </script>
 
 <template>
@@ -161,7 +177,13 @@ const EVENT_COLORS: Record<string, string> = {
           </el-table-column>
           <el-table-column label="详情" min-width="240">
             <template #default="{ row }">
-              <span class="mono">{{ JSON.stringify(row.detail) }}</span>
+              <!--
+                detail 可能是字符串（如「16.99 → 13.59」）也可能是对象 ——
+                后端 safeJson 解析成功给对象，失败则原样返回字符串。
+                无条件 JSON.stringify 会给纯文本套一层多余的引号，
+                所以字符串直接渲染，只有对象才序列化。
+              -->
+              <span class="mono">{{ formatDetail(row.detail) }}</span>
             </template>
           </el-table-column>
         </el-table>
