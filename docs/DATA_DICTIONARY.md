@@ -1,7 +1,24 @@
 # Sif 后台复刻 —— 数据字典
 
-> 状态：**侦察进行中**。A 部分（系统表）已可审查；B 部分（业务表）待 7 个子 Agent 产出后合并。
-> 目标库：`sif_replica`（Apache Doris）。**绝不触碰 `reroll_analysis`。**
+> 状态：**侦察期产出，已被后续 schema 变更部分推翻**。
+> A 部分（系统表）大体仍准；B 部分（业务表）**主键描述已过期** ——
+> 本文写的是 `keyword_id` 作主键，而 `db/schema-04-keyword-text-key.sql`
+> 已把 16 张关键词表改成 `(keyword, country)` 文本键。
+>
+> **当前实况请以 [DORIS_SCHEMA_DESIGN.md §15](DORIS_SCHEMA_DESIGN.md) 为准**
+> （实况 **70 张**物理表；§15 的字段清单本身也还停在 65 张，
+> 未含 schema-09 的 1 张与 schema-10 的 4 张，补进去要重跑生成流程）。
+> 本文保留价值在于**字段的中文语义与实测依据**（每张表的 COMMENT 来源），
+> 看字段含义可以，抄主键/表数不行。
+>
+> ⚠️ **本文已停止维护**（2026-09-23 确认）：schema-07 起新建的表一张都没进来
+> （`fact_keyword_acos_estimate` / `fact_rec_column_trend` /
+> `fact_asin_daily_snapshot` / `fact_asin_keyword_attribution` /
+> `fact_keyword_nf_share` / `fact_keyword_slot_hourly` …）。
+> 新增表**不必**回写本文，请写进 `DORIS_SCHEMA_DESIGN.md`。
+>
+> 目标库：**`looom`**（Apache Doris）—— 本文原写 `sif_replica`，那是设计阶段的暂定名，
+> 实际库名定为 `looom`（三个 o）。**绝不触碰 `reroll_analysis`。**
 
 ## 通用约定（Doris 适配，全表适用）
 
@@ -473,11 +490,17 @@
 
 ## B6. 业务表统计
 
+> ⚠️ **以下为侦察期的设计口径，与当前库不符，勿引用。**
+> 实测当前库为 **65 张物理表 = 61 张逻辑表 + 4 张分区迁移残留**，
+> 完整清单与行数见 [DORIS_SCHEMA_DESIGN.md §14.1](DORIS_SCHEMA_DESIGN.md)。
+> 差异来源：schema-03 补 3 张 gap 表、schema-04 重建 16 张关键词表、
+> schema-06/07 M13 又增删若干。下文数字保留作历史对照。
+
 - **基础实体** 8 张
 - **时序快照** 18 张（月 9 / 日 5 / 区间 4）
 - **关系表** 7 张
 - **枚举字典** 10 张
-- **合计 43 张业务表** + 12 张系统表 = **55 张**
+- **合计 43 张业务表**（撰写时口径）+ 12 张系统表 = **55 张**
 
 （各域原始提案 90+ 张，去重合并后 43 张）
 
@@ -511,7 +534,7 @@
 | `dict_traffic_channel` | `dict_traffic_channel`、`dict_traffic_type`×2、`dict_traffic_scope` | 3 |
 | `dim_recommend_column` | `dim_recommend_column`、`dict_recommend_column`、`dict_rec_column` | 3 |
 
-前缀风格统一：废弃 `enum_`（并入 `dict_`）、废弃 `sif_`（库名已是 `sif_replica`）。
+前缀风格统一：废弃 `enum_`（并入 `dict_`）、废弃 `sif_`（库名已能区分，无需再冠名）。
 
 ## C3. 归入系统表的原「业务表」提案
 

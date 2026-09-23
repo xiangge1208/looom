@@ -132,6 +132,16 @@ export class BusinessController {
     return res
   }
 
+  /**
+   * 该 ASIN 有流量数据的月份列表（「流量时光机」的月份选择器数据源）。
+   *
+   * 不计入查询历史 —— 它只是辅助元数据，不是用户主动发起的业务查询。
+   */
+  @Get('traffic/months')
+  trafficMonths(@Query() q: AsinQueryDto) {
+    return this.traffic.listAvailableMonths(q.asin, q.country ?? 'US')
+  }
+
   @Get('traffic/variants')
   trafficVariants(
     @Query() q: TimePieceQueryDto,
@@ -143,6 +153,31 @@ export class BusinessController {
       dimension,
       q.timePieceValue,
     )
+  }
+
+  /**
+   * 日粒度序列（价格 / BSR / 流量 / 口碑 / 运营事件）。
+   *
+   * 一个端点服务两个图表 —— 它们要同一份数据、只是窗口不同：
+   *   「查流量结构」60 天价格与流量复合图   → days=60
+   *   「运营时光机」83 天因果图             → days=83
+   * days 上限 400（源一次最多给 12 个月，实测 356 天）。
+   */
+  @Get('traffic/daily')
+  async trafficDaily(
+    @Query() q: AsinQueryDto,
+    @Query('days') days: string,
+    @User() user: CurrentUser,
+    @Ip() ip: string,
+  ) {
+    const t0 = Date.now()
+    const res = await this.traffic.getDailyTrend(
+      q.asin,
+      q.country ?? 'US',
+      days ? Number(days) : undefined,
+    )
+    this.track(user, ip, 'asin', q.asin, q.country ?? 'US', '/traffic/daily', t0, res.days)
+    return res
   }
 
   // ---- 反查流量词 ----
@@ -174,6 +209,51 @@ export class BusinessController {
     @Query('asin') asin?: string,
   ) {
     return this.keywords.getKeywordSource(keyword, country, asin)
+  }
+
+  /**
+   * 流量变化归因（关键词 / 流量变化 / 影响原因）。
+   *
+   * ⚠️ 必须声明在 `keywords/:keyword/source` **之后**、且路径里
+   * 没有与之冲突的动态段 —— 'keywords/attribution' 会被
+   * `keywords/:keyword/source` 之外的通配路由抢走的风险这里不存在
+   * （那条有固定后缀 /source），但顺序仍按「具体路径在前」的习惯排。
+   */
+  @Get('keywords/attribution')
+  async keywordAttribution(
+    @Query() q: AsinQueryDto,
+    @Query('granularity') granularity?: string,
+    @Query('statDate') statDate?: string,
+    @Query('limit') limit?: string,
+    @User() user?: CurrentUser,
+    @Ip() ip?: string,
+  ) {
+    const t0 = Date.now()
+    const res = await this.keywords.getKeywordAttribution(q.asin, q.country ?? 'US', {
+      granularity,
+      statDate,
+      limit: limit ? Number(limit) : undefined,
+    })
+    if (user && ip) {
+      this.track(
+        user, ip, 'asin', q.asin, q.country ?? 'US',
+        '/keywords/attribution', t0, res.items?.length,
+      )
+    }
+    return res
+  }
+
+  /**
+   * ABA 搜索趋势（该词自身量 + 词根综合量 + ABA 排名）。
+   * 本期只出端点，「产品时光机」页面留到下一期。
+   */
+  @Get('keywords/:keyword/aba-trend')
+  abaTrend(
+    @Param('keyword') keyword: string,
+    @Query('country') country = 'US',
+    @Query('granularity') granularity = 'week',
+  ) {
+    return this.keywords.getAbaTrend(keyword, country, granularity)
   }
 
   // ---- 广告透视 ----

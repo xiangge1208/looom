@@ -124,13 +124,23 @@ const AD_TYPE_COLORS: Record<number, string> = {
               </template>
             </el-table-column>
             <el-table-column prop="strategy" label="投放策略" min-width="160" />
+            <!--
+              涉及 ASIN：源侧 asin_num 实测 5,925/5,928 行为空，
+              后端会回落成「本组有曝光的变体数」并用 asinNumSource 标注来源。
+              derived 时加 ≥ 前缀，避免把「至少这么多」读成精确值。
+            -->
             <el-table-column label="涉及 ASIN" width="104">
-              <template #default="{ row }">{{ row.asinNum }}</template>
+              <template #default="{ row }">
+                <span v-if="row.asinNum === null || row.asinNum === undefined" class="muted">—</span>
+                <span v-else :title="row.asinNumSource === 'derived' ? '源未提供，按本组有曝光的变体数推算，实际可能更多' : ''">
+                  <span v-if="row.asinNumSource === 'derived'" class="muted">≥</span>{{ row.asinNum }}
+                </span>
+              </template>
             </el-table-column>
             <el-table-column label="投放小组" width="104">
               <template #default="{ row }">
                 <span class="strong">{{ row.involvedAdNum }}</span>
-                <span class="muted"> / {{ row.adNum }}</span>
+                <span class="muted"> / {{ row.adNum ?? '—' }}</span>
               </template>
             </el-table-column>
             <el-table-column label="流量得分" width="112" sortable :sort-method="(a: any, b: any) => a.totalScore - b.totalScore">

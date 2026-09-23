@@ -25,34 +25,50 @@ export class AdsService {
    * keyword_id 上闭合不了 —— 上游 `web-variant-ad-keywords.keywords[]` 只给
    * 关键词文本、不给 keywordId，回查字典 835 个词仅 15 个可解（1.8%）。
    * 详见 docs/MODULE_DATA_FLOW.md 模块 7-9。
-   * 表恒为空 → 这个接口恒返回 0 条，页面永远空白。
    *
-   * 改走 `fact_asin_keyword_snapshot.sp_campaign_id`：它是「该 ASIN 的某个
-   * 流量词由哪个广告活动带来」，能直接给出 ASIN → 活动 的关联，
-   * 实测覆盖 2,661 个 ASIN / 6,352 条关联。
+   * ## 2026-09-22 修正：该前提已不成立，改回走曝光表
    *
-   * 代价：只能拿到 SP（商品推广）活动 —— 该列只记 SP 的 campaignId。
-   * 但这是目前唯一闭合的路径，比整页空白强。
-   * involvedAdNum 改成「该活动为本 ASIN 带来多少个流量词」，
-   * totalScore 用这些词的流量得分之和（原先是曝光得分，同样无源）。
+   * 上面那段结论错在「必须靠 keyword_id 关联」这个假设上。schema-04 早已把
+   * 关键词表的主键改成 `(keyword, country)` 文本键，`keyword_id` 降级为可空列
+   * —— 所以**按关键词文本就能闭合**，keywordId 缺失根本不影响建表。
+   * 补齐 web-variant-ad-keywords 的全部分页后，这张表实测 1,887 行、21 个活动、
+   * 24 个投放小组，不再是空表。
+   *
+   * 退回 `fact_asin_keyword_snapshot.sp_campaign_id` 的代价是**严重低估**：
+   * 那一列只记「该 ASIN 的流量词恰好由哪个 SP 活动带来」，是广告数据的副产品，
+   * 实测只能看到 4 个活动，而真实投放有 21 个 —— 漏掉 81%。
+   * 所以这里改回以曝光表为准。
+   *
+   * ## 统计口径
+   *
+   * 按**变体组**聚合：广告投在子体上，用户查父体时要看到整组的投放全貌，
+   * 所以 variant_asin 用子体集合而不是单个 ASIN。
+   * involvedAdNum = 该活动下的投放小组数（回归字段原义）；
+   * totalScore = 该活动各词曝光得分之和。
    */
   async listCampaigns(asin: string, country: string) {
+    const asins = await this.resolveAsinScope(asin, country)
+    if (!asins.length) return { asin, country, campaigns: [] }
+
+    const ph = asins.map(() => '?').join(', ')
     const rows = await this.db.query<any>(
       `SELECT c.encrypt_campaign_id, c.fake_campaign_id, c.ad_type, c.strategy,
               c.asin_num, c.ad_num, c.campaign_created_at, c.last_ad_created_at,
               t.name_cn AS ad_type_name,
-              COUNT(DISTINCT s.keyword) AS involved_ad_num,
-              SUM(COALESCE(s.listing_score_ratio, 0)) AS total_score
-         FROM fact_asin_keyword_snapshot s
+              COUNT(DISTINCT e.encrypt_ad_id) AS involved_ad_num,
+              COUNT(DISTINCT e.keyword) AS keyword_cnt,
+              COUNT(DISTINCT e.variant_asin) AS variant_cnt,
+              SUM(COALESCE(e.score, 0)) AS total_score
+         FROM fact_ad_search_term_exposure e
          JOIN dim_ad_campaign c
-           ON c.encrypt_campaign_id = s.sp_campaign_id AND c.country = s.country
+           ON c.encrypt_campaign_id = e.encrypt_campaign_id AND c.country = e.country
     LEFT JOIN dict_ad_type t ON t.code = CAST(c.ad_type AS CHAR)
-        WHERE s.asin = ? AND s.country = ? AND s.sp_campaign_id IS NOT NULL
+        WHERE e.country = ? AND e.variant_asin IN (${ph})
      GROUP BY c.encrypt_campaign_id, c.fake_campaign_id, c.ad_type, c.strategy,
               c.asin_num, c.ad_num, c.campaign_created_at, c.last_ad_created_at,
               t.name_cn
-     ORDER BY total_score DESC`,
-      [asin, country],
+     ORDER BY keyword_cnt DESC, total_score DESC`,
+      [country, ...asins],
     )
 
     return {
@@ -67,14 +83,69 @@ export class AdsService {
         adTypeName: r.ad_type_name ?? String(r.ad_type),
  // 后端算好的中文串，直接用
         strategy: r.strategy,
- asinNum: Number(r.asin_num ?? 0),
-        adNum: Number(r.ad_num ?? 0),
+        /**
+         * 「涉及 ASIN」列。
+         *
+         * ⚠️ 原先写 `Number(r.asin_num ?? 0)`，而 dim_ad_campaign.asin_num
+         * 实测 5,925/5,928 行是 NULL（源侧就没给），于是页面上这一列**恒显示 0**，
+         * 看起来像「这个广告活动没有投任何商品」，是错的读数。
+         *
+         * 修法：优先用 dim 表的源值，源值缺失时**回落到本次查询已经算出的
+         * variant_cnt**（该活动下有曝光的去重变体数）—— 同一个 SELECT 里
+         * 已经 COUNT(DISTINCT e.variant_asin) 了，不必另建表或回填。
+         * 两者口径略有差别（variant_cnt 只统计「本组变体」中有曝光的），
+         * 所以用 asinNumSource 标出来，前端可据此决定是否加「≥」前缀。
+         *
+         * 都没有时给 null 而不是 0，让前端显示「—」。
+         */
+        asinNum:
+          r.asin_num !== null && r.asin_num !== undefined
+            ? Number(r.asin_num)
+            : r.variant_cnt !== null && r.variant_cnt !== undefined
+              ? Number(r.variant_cnt)
+              : null,
+        /** 'source' = 源给的准确值；'derived' = 由本组曝光变体数推算（可能偏小） */
+        asinNumSource:
+          r.asin_num !== null && r.asin_num !== undefined ? 'source' : 'derived',
+        adNum: r.ad_num === null || r.ad_num === undefined ? null : Number(r.ad_num),
+        // 该活动下有曝光的投放小组数
         involvedAdNum: Number(r.involved_ad_num ?? 0),
+        // 该活动为本变体组带来多少个买家搜索词
+        keywordCnt: Number(r.keyword_cnt ?? 0),
+        // 该活动覆盖了组内多少个变体
+        variantCnt: Number(r.variant_cnt ?? 0),
         totalScore: r.total_score === null ? 0 : Number(r.total_score),
         campaignCreatedAt: fmtDate(r.campaign_created_at),
         lastAdCreatedAt: fmtDate(r.last_ad_created_at),
       })),
     }
+  }
+
+  /**
+   * 把输入的 ASIN 解析成要统计的 ASIN 集合。
+   *
+   * 广告投放在**子体**维度上（曝光表的 variant_asin 是子体），
+   * 但用户常输入父体想看整组的投放全貌。
+   * 传父体就展开成该组全部子体，传子体就只返回它自己。
+   *
+   * 与 insights.service.ts 的同名方法口径一致。
+   */
+  private async resolveAsinScope(asin: string, country: string): Promise<string[]> {
+    const target = await this.db.queryOne<any>(
+      'SELECT asin, is_parent_asin FROM dim_asin WHERE asin = ? AND country = ? LIMIT 1',
+      [asin, country],
+    )
+    if (!target) return []
+    if (target.is_parent_asin) {
+      const children = await this.db.query<any>(
+        'SELECT child_asin FROM rel_asin_variant WHERE parent_asin = ? AND country = ? ORDER BY display_order',
+        [asin, country],
+      )
+      // 变体关系表里父体自己也可能作为在售变体出现，去重后返回
+      const list = children.map((c: any) => c.child_asin)
+      return list.length ? [...new Set(list)] : [asin]
+    }
+    return [asin]
   }
 
   /**
@@ -124,8 +195,23 @@ export class AdsService {
   ) {
     const limit = normalizeLimit(opts.limit)
 
-    const where = ['e.variant_asin = ?', 'e.country = ?']
-    const params: any[] = [asin, country]
+    /**
+     * 按**变体组**查，不是单个 ASIN。
+     *
+     * 曝光表的 variant_asin 是子体 —— 广告投在子体上。用户查父体时
+     * 只匹配父体自己会漏掉绝大部分广告词（实测该组 11 个变体都有投放，
+     * 只看父体会从 737 个词掉到 100 个左右）。
+     */
+    const asins = await this.resolveAsinScope(asin, country)
+    if (!asins.length) {
+      return { asin, country, items: [], nextCursor: null, hasMore: false }
+    }
+
+    const where = [
+      `e.variant_asin IN (${asins.map(() => '?').join(', ')})`,
+      'e.country = ?',
+    ]
+    const params: any[] = [...asins, country]
 
     if (opts.campaignId) {
       where.push('e.encrypt_campaign_id = ?')
@@ -152,7 +238,7 @@ export class AdsService {
     const rows = await this.db.query<any>(
       `SELECT e.keyword, e.keyword_id, k.translate_keyword, e.encrypt_ad_id,
      e.encrypt_campaign_id, e.ad_type, e.traffic_type, e.score,
-   e.rank_position, e.stat_date, c.name_cn AS traffic_name
+   e.rank_position, e.stat_date, e.variant_asin, c.name_cn AS traffic_name
       FROM fact_ad_search_term_exposure e
       LEFT JOIN dim_keyword k
         ON k.keyword = e.keyword AND k.country = e.country
@@ -183,6 +269,8 @@ export class AdsService {
  trafficTypeName: r.traffic_name ?? r.traffic_type,
         score: Number(r.score),
         rankPosition: r.rank_position === null ? null : Number(r.rank_position),
+        // 投放这个词的是哪个变体 —— 查父体时组内多个子体都可能在投同一个词
+        variantAsin: r.variant_asin,
  statDate: fmtDate(r.stat_date),
       })),
       nextCursor: page.nextCursor,

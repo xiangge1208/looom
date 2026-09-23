@@ -473,11 +473,37 @@ flowchart TD
 > `data.recommend.<title>` 实测只有 4 个键（`name`/`wholeName`/`ratio`/`score`），无计数无日期。
 > 顺带：`score` 有值但 Doris 没这一列，被丢了。
 
+> ⚠️ **上表的「无源」结论已被 2026-09-22 的换源推翻（本节其余内容是 PG 视角，保留作历史）。**
+> `ratio` 现已由 sif-mcp `ops_get_listing_traffic_overview` 灌入（见 `scripts/sif_load_rec_column.mjs`），
+> 且响应带 `data_notice` 提供真实日期，`stat_date` 不必再退化用 `fetched_at`。
+> `campaign_cnt` / `keyword_cnt` 改由下面这张新表承载。
+
+### `fact_rec_column_trend` ← 原站 `POST /api/search/rec/recView`（🟢 新建，schema-09）
+
+**不走 PG** —— PG 侧算不出（`allRankHistory.recRanks` 只记「某天该专栏出现了、由哪个活动带来」，
+拿不到「该专栏当天关联了多少活动/多少词」，那是跨该 ASIN 全部关键词去重后的计数）。
+换成原站服务端已算好的 `rec/recView`。
+
+| Doris 列 | 源字段 | 说明 |
+|---|---|---|
+| `campaign_cnt` / `keyword_cnt` | `campaignCntTrends` / `keywordCntTrends` 按天拆行 | ⚠️ **数组里的 null 是「当天该专栏无曝光」不是 0**，画图要断线；补 0 会画成贴底的线，读起来像「有数据但为 0」 |
+| `last_campaign_cnt` / `last_keyword_cnt` | `lastCampaignCnt` / `lastKeywordCnt` | ⚠️ **行尾数字用这两列，不要取趋势数组末位** —— 实测 `Picks from Amazon Influencers` 的数组末位是 null 而 `lastCampaignCnt=1` |
+| `window_days` / `window_start` / `window_end` | `totalDays` 等 | 窗口信息每行重复存，免得单表查询还要关联窗口表 |
+
+> ⚠️ **采集必须由主会话在已登录浏览器里导航并捕获响应** ——
+> `_m` 参数按请求现签，手工重放会拿 404（见 `scripts/load_rec_column_trend.mjs` 的说明）。
+> 消费方：`apps/api/src/business/insights.service.ts`（`getRecommendColumns`）。
+>
+> ⚠️ schema-09 用的是 `DROP TABLE IF EXISTS` + 裸 `CREATE`（不是 `CREATE TABLE IF NOT EXISTS`），
+> **重跑会清空已灌数据**，而它现在被 `setup-doris.sh` 的 `SCHEMA_FILES` 无条件执行。
+> 新建表请勿照抄这一点。
+
 | SQL | 打的表 | 就绪 | 说明 |
 |---|---|---|---|
 | SQL1 | `dim_recommend_column` | 🟢 | **改判**：实测 **141 个**专栏名（非 18），可直接初始化 |
-| SQL2 | `fact_asin_rec_column_period` | 🔴 | `ratio` 有源（214 对），但 `stat_date`/`campaign_cnt`/`keyword_cnt` 无源 |
+| SQL2 | `fact_asin_rec_column_period` | 🟢 | **二次改判（2026-09-22 换源）**：`ratio` 与 `stat_date` 已由 sif-mcp 灌入；计数列移交 `fact_rec_column_trend` |
 | SQL3 | `rel_rec_column_campaign_keyword` | 🟢 | **改判**：5 列全有源，**可落 1,002 行**，`keyword_id` 填充 100% |
+| SQL4 | `fact_rec_column_trend` | 🟢 | **新增（schema-09）**：按天活动数/词数，源 `rec/recView`。PG 侧算不出，见上方小节 |
 
 **其中 18 个（早期只从 `changeReasons[].recTitle` 提取到的子集，完整是 141 个）**：
 
@@ -601,6 +627,47 @@ WHERE sub_bsr IS NOT NULL
 > 展开后 **1,607,417 行，主键组合完全唯一，无需去重**。
 > 有 **63,021 行** `sub_bsr` 有值但主表 `bsr` 为 NULL——两者独立，别用主 `bsr` 做过滤。
 > `cat_name` 上游有截断脏值（`Toys & Game`、`Home & Kitche` 被砍尾），**保持原样不要修**，否则与上游对不上。
+>
+> ⚠️ **本表只有小类 BSR**。上游 `sub_bsr` 就是小类字典，**大类 BSR（`bsr` 列）在这条链路上没有落表**，
+> 原站因果图的 BSR 双倒置轴要两条线，此前只能画出一条。
+> 大类已由 `fact_asin_daily_snapshot.bsr` 补上（见下），两表的 BSR **不是同一个量，不要混用**。
+
+### `fact_asin_daily_snapshot` ← `sif-cli` `traffic-trend[granularity=day]`（🟢 新建，2026-09-23）
+
+**不走 PG**，源是 sif-cli 网关。一次调用返回 **356 天 × 37 字段**，覆盖原站 60 天复合图与 83 天因果图所需的全部序列。
+ETL：`scripts/sif_load_daily_grain.mjs`（主会话落盘 → 脚本解析入库，与 `sif_load_rec_column.mjs` 同模式）。
+
+| Doris 列族 | 源字段 | 实测填充（B01NBNDC1T / 356 天） |
+|---|---|---|
+| `buybox_price` / `deal_price` | `buyboxPrice` / `dealPrice` | 356/356，12.50~28.50 |
+| `ld_price` + `ld_raw` | `ldPrice` | **36/356**。⚠️ 源是复合串 `"14.99_0_当日19:35-次日07:35"`，拆价格 + 存原串 |
+| `prime_price` | `primePrice` | 10/356 |
+| `total_score` / `nf_score` / `ad_score` | `totalScore.score` 等 | 351/356 |
+| `sp_score` / `rec_sp_score` / `sb_score` / `sbv_score` | 同上 `.score` | 348 / 318 / 293 / 279 |
+| **`bsr`（大类）** | `bsr[]` | 356/356，9~122，类目 `Home & Kitchen` |
+| **`sub_bsr`（小类）** + `sub_bsr_cat` | `subBsr` 字典 | 356/356，恒 1~2，类目 `Pillow Inserts` |
+| `star` / `review_num` / `seller_num` | `star` / `review` / `seller` | 356/356 |
+| `woot` / `title_img` / `coupon_info` / `promotion` | 同名 | 356 / **14** / **0** / **9** |
+| `bought_in_past_month` | `boughtInPastMonth` | 352/356，值 30000（**分档下界非精确值**） |
+
+> **三个易错点**：① 源是「`dates[]` 时间轴 + 等长数组」按**下标对齐**，不是 `{date,value}` 配对；
+> ② 流量族是**结构体数组** `{score, scoreRatio, ...}`，要取 `.score`；
+> ③ `subBsr` 的键是**动态类目名**，遍历取不要硬编码。
+> `titleImg` 是**整数标志位**（实测值 2）不是文本。
+
+### `fact_asin_keyword_attribution` ← `sif-cli` `rvs`（日） + `diag`（月）（🟢 新建，2026-09-23）
+
+回答「这个词变了多少、**为什么**变」。与 `fact_asin_keyword_inout` 语义不同（那张只记进出状态），两表并存。
+
+| Doris 列 | 源（diag / rvs） | 实测 |
+|---|---|---|
+| `contri_change` | `diffScore` / `contriChange` | 月 300 词（源总计 3,079）、日 10 词 |
+| `reason_summary` | 由 `pchangeReason` / `changeReasons[]` 预格式化 | 如「SP(常规)位：5 → 2；SP(推荐)位：2 → 0；SB位：17 → 3」 |
+| `change_reasons` | 原文 JSON | 变长结构体数组，拆列会爆所以原样存 |
+
+> ⚠️ 源里有**同义字段对**：`sbInfo` 与 `brandInfo` 值恒相同、`sbvInfo` 与 `vedioInfo` 同理
+> （`vedio` 是源侧拼写错误）。不去重会让摘要里同一件事说两遍
+> （实测「SB位：17 → 3；品牌位：17 → 3」）。ETL 的 `CH_LABEL` 已只保留一个。
 
 ### `fact_asin_keyword_overview` ← `sif_api_log`[`endpoint='web-asin-keyword-overview'`]（🟢 源比预期完整）
 
@@ -1191,14 +1258,39 @@ flowchart TD
 | 其他 | `rel_keyword_top_asin` | **56,795**（top 46,451 + conv 10,344） | `etl_keyword_top_asin.py` + `etl_module13_wordpick.py` |
 | 其他 | `dim_festival` | 156 | 既有 |
 
-**4 张确证无源的表（不是没做，是做不了）**
+**4 张曾判「无源」的表（2026-09-22 复核：1 张判断错误已推翻，3 张仍成立）**
 
-| 表 | 为什么做不了 |
-|---|---|
-| `fact_ad_search_term_exposure` | 四元组主键在 `keyword_id` 上闭合不了：`web-variant-ad-keywords.keywords[]` 只给文本不给 ID，回查字典 835 词仅 15 可解（1.8%） |
-| `rel_keyword_group` | 唯一候选源 `web-keyword-extend` 实测返回的是 **CPC 竞价数据**（`cpc.autoForSales_broad[].median`），没有 `group_id` |
-| `fact_word_frequency` | 同上，该源无词根/词频结构 |
-| `rel_asin_keyword_variant_exposure` | `asins-search-exposure` 实测 `history` / `exposureRatioScore` 全为 null，且无关键词与变体维度 |
+| 表 | 撰写时判断 | 2026-09-22 复核 |
+|---|---|---|
+| `fact_ad_search_term_exposure` | 四元组主键在 `keyword_id` 上闭合不了：`web-variant-ad-keywords.keywords[]` 只给文本不给 ID，回查字典 835 词仅 15 可解（1.8%） | ⛔ **判断错误，已推翻。** 现 **1,887 行**（`B01NBNDC1T` 一例）。详见下方「一次被推翻的判死」 |
+| `rel_keyword_group` | 唯一候选源 `web-keyword-extend` 实测返回的是 **CPC 竞价数据**（`cpc.autoForSales_broad[].median`），没有 `group_id` | ✅ 仍成立（0 行） |
+| `fact_word_frequency` | 同上，该源无词根/词频结构 | ✅ 仍成立（0 行） |
+| `rel_asin_keyword_variant_exposure` | `asins-search-exposure` 实测 `history` / `exposureRatioScore` 全为 null，且无关键词与变体维度 | 🔄 **部分推翻**：该源确实给不出，但 **`web-variant-ad-keywords` 能**（它有 `asins`×`keyword`×`kwSpScoreRatio`）。现 **743 行** |
+
+### ⛔ 一次被推翻的判死：`fact_ad_search_term_exposure`
+
+这张表曾在本文件、`ads.service.ts` 注释、`DORIS_SCHEMA_DESIGN.md §5` 三处
+被判「**建不起来、恒为空**」，理由是「主键在 `keyword_id` 上闭合不了，
+上游只给关键词文本，回查字典 835 词仅 15 个可解（1.8%）」。
+
+**这个结论建立在过时的假设上。** `db/schema-04-keyword-text-key.sql`
+早已把关键词表的主键从 `keyword_id` 改成 `(keyword, country)` **文本键** ——
+按文本就能闭合，`keywordId` 缺失根本不影响建表。
+判死时引用的「1.8% 可解率」是 schema-04 **之前** 的约束。
+
+后果：`ads.service.listCampaigns` 因此退到 `fact_asin_keyword_snapshot.sp_campaign_id`
+这条替代路径，而那一列只记 SP、「该 ASIN 的流量词恰好由哪个活动带来」，
+实测**只能看到 4 个活动，真实投放有 21 个 —— 漏掉 81%**。
+
+2026-09-22 修正后：该表 1,887 行、21 个活动、24 个投放小组，
+`listCampaigns` 已改回走本表（见 `ads.service.ts` 的注释）。
+
+> **教训（对 ETL 有普遍意义）**：
+> 凡「因某个 ID 列缺失而判定无源」的结论，都要连表**当时的主键定义**一起复查。
+> schema-04 这类主键迁移会让旧的「ID 依赖」判断整批失效，
+> 而判死结论会被后续文档反复引用（本文件即有 5 处），越传越像定论。
+
+---
 
 ### ⚠️ 实灌过程中发现的两处文档错误（已修正实现）
 

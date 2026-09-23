@@ -2,22 +2,40 @@
 import { computed } from 'vue'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
-import { BarChart, LineChart, PieChart } from 'echarts/charts'
+import { BarChart, LineChart, PieChart, ScatterChart } from 'echarts/charts'
 import {
+  DataZoomComponent,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
+  MarkPointComponent,
   TitleComponent,
   TooltipComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
 
-// 按需注册 ECharts 组件，避免全量打包（全量约 1MB）
+/**
+ * 按需注册 ECharts 组件，避免全量打包（全量约 1MB）。
+ *
+ * ⚠️ **忘记注册不会报错，图表会静默不画**。加新图表类型或新组件
+ * （markLine / dataZoom / scatter …）时必须在这里补一行，否则调试会很久
+ * 才发现是注册问题而不是数据问题。
+ *
+ * Scatter    —— 运营事件散点（因果图上标 Coupon / 改标题 / 秒杀）
+ * DataZoom   —— 83 天因果图的区间缩放（点位太密时需要拖拽）
+ * MarkLine   —— 事件竖线（TimelineView 在用）
+ * MarkPoint  —— 极值标注
+ */
 use([
   BarChart,
   LineChart,
   PieChart,
+  ScatterChart,
+  DataZoomComponent,
   GridComponent,
   LegendComponent,
+  MarkLineComponent,
+  MarkPointComponent,
   TitleComponent,
   TooltipComponent,
   CanvasRenderer,

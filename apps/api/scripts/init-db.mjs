@@ -53,6 +53,12 @@ const FILES = [
   // 但对全新库（容器场景）只是带分区建表，所以放这里是安全的。
   '/app/db/schema-05-partitions.sql',
   '/app/db/schema-06-m13-wordpick.sql',
+  // schema-08 修 6 个列注释的编码损坏；schema-09 推荐专栏按天趋势；
+  // schema-10 日粒度快照 + 流量归因 + 两张待源空表。
+  // ⚠️ 这三个此前也漏在这里（与 schema-05/06 同一类疏漏）。
+  '/app/db/schema-08-fix-garbled-comments.sql',
+  '/app/db/schema-09-rec-column-trend.sql',
+  '/app/db/schema-10-daily-grain.sql',
   '/app/db/seed.sql',
   // M13 竞价页的 seed（真实源未接入，走生成器）。
   // ⚠️ 必须在 schema-07 之后 —— 目标表 fact_keyword_bid_estimate 是

@@ -36,9 +36,14 @@ tools/sif-proxy.mjs
 __pycache__/
 *.pyc
 
-# 调试期的页面截图，不随项目发布
+# 调试期的页面截图，不随项目发布。
+# ⚠️ sif-* 是**原站页面**的截图，用于对照版面。goal.md 明确「不要复制原站的
+# Logo、图片素材」，所以这类文件只留本地、不进仓库。
 compete-view.png
 sales-deployed.png
+sif-rec-vp1.png
+sif-rec-vp2.png
+sif-recommend-full.png
 
 # 采集/调试的落盘中间产物。
 # ⚠️ 必须忽略：.tmp/ 里会出现 token.txt（登录态 JWT）和抓取响应原文，

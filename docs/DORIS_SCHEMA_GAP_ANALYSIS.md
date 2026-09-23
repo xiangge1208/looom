@@ -1,18 +1,26 @@
 # Doris 表结构差距分析（对照 M10~M15 修订计划）
 
-> 日期：2026-09-21。方法：直连 Doris（59 张表全量 DDL + 行数，快照存 `docs/audit/doris-ddl-snapshot.sql`）
+> 日期：2026-09-21（**表数口径已于 2026-09-22 重核，见下方修订行**）。
+> 方法：直连 Doris 全量 DDL + 行数（快照存 `docs/audit/doris-ddl-snapshot.sql`，**已刷新为 65 张**）
 > + PG `sif_api_log` 端点覆盖实查。对照依据：ROADMAP 修订表 + SIF_UI_AUDIT §8b~§8e。
 > **本文档回答一个问题：当前表结构哪些不能满足 M10~M15，哪些要改、哪些要新建。**
+>
+> ⚠️ **2026-09-22 修订**：本文撰写时记「59 张表」，实为
+> **65 张物理表 = 61 张逻辑表 + 4 张分区迁移残留**。文中所有行数也已过期（数据在持续 ETL）。
+> 权威实况见 [DORIS_SCHEMA_DESIGN.md §14](DORIS_SCHEMA_DESIGN.md)，本节 §0 表格已同步。
+> **§1 各表的「行数」列保留撰写时值，仅供横向比较量级，不要当现值引用。**
 
 ---
 
 ## 0. 结论速览
 
+> 修订（2026-09-22）：下表「数量」为撰写时判断，**执行结果**见括号内。
+
 | 动作 | 数量 | 明细 |
 |---|---:|---|
 | ✅ 现有表直接可用 | 12 张 | 见 §1 |
-| 🔧 需改表（改注释/加列/改名/重建键） | 5 张 | 见 §2 |
-| ➕ 需新建 | 11 张 | 见 §3（M13 两张、M14 两张、M15a 三张、M12 三张、M11 一张） |
+| 🔧 需改表（改注释/加列/改名/重建键） | 5 张 | 见 §2（**4 张已执行**：改名拆维、metric 加列、dict 加 rec 行、favorites 重建键；`rel_keyword_group` 尚未 DROP，仍 0 行） |
+| ➕ 需新建 | 11 张 | 见 §3（**实查仅 3 张已建**：`fact_keyword_bid_estimate`、`rel_keyword_asin_traffic_share`、`fact_keyword_acos_estimate`；其余 8 张未建，清单见 §14.2） |
 | ❌ 原计划新建但建议取消 | 2 张（另 1 张被合并语义） | 见 §4 |
 | 🟢 探源升级（seed→真实 ETL） | 2 项 | 见 §5 |
 
@@ -142,6 +150,33 @@ UNIQUE KEY(user_id, favorite_type, target_type, country, target_value)
 | 表 | 主键 | 数据来源 | 说明 |
 |---|---|---|---|
 | `fact_keyword_period_product` | `(keyword, country, period_type, period_value, asin)` | 🔴 seed（`summaryKeyword` 端点无日志） | 关键词×时间段→历史畅销产品榜（页面主体，100 行/时段） |
+
+### 日粒度补表（2026-09-23 已执行，schema-10）
+
+本轮不在原计划内 —— 是用 `B01NBNDC1T` 逐页对照原站规格后新发现的缺口。
+完整记录见 `DORIS_SCHEMA_DESIGN.md` §16。
+
+| 表 | 主键 | 数据来源 | 状态 |
+|---|---|---|---|
+| `fact_asin_daily_snapshot` | `(asin, country, stat_date)` | 🟢 `sif-cli traffic-trend[granularity=day]`，一次 356 天 × 37 字段 | ✅ **已建已灌**（356 行）。同时供 60 天复合图与 83 天因果图 |
+| `fact_asin_keyword_attribution` | `(asin, country, keyword, stat_date, granularity)` | 🟢 `sif-cli rvs`（日）+ `diag`（月） | ✅ **已建已灌**（310 行） |
+| `fact_keyword_search_trend` 加 2 列 | （既有表） | 🟢 `sif-cli keyword-aba-trend`，103 周 | ✅ **已加已灌**（+309 行）。补 `ext_searches_num` / `searches_rank` |
+| `fact_keyword_nf_share` | `(keyword, country, asin, stat_date)` | ⬜ **无源** | ⚠️ **表已建、数据待源**，见下 |
+| `fact_keyword_slot_hourly` | `(keyword, country, stat_hour, slot)` | ⬜ **源需账号侧操作** | ⚠️ **表已建、数据待源**，见下。全库第一张小时粒度表 |
+
+**两张空表取不到数的确定性结论**（不是 ETL 漏了）：
+
+- `fact_keyword_nf_share`（占位率，支撑「拓词&筛查」页）：
+  已核 `sif-cli list` 全部 **41 个 endpoint**（meta/keyword/asin/compete/monitor/webapp 六组），
+  **没有返回 topN 占位率的接口**。`asin-keyword-detail` 给的是该 ASIN 自己的逐日排名，
+  不是「前 N 名里的占位数」，**算不出分子**。
+  → **下一步条件**：找到能返回某词自然位 Top48 **完整 ASIN 列表**的源，即可自行聚合
+  （分子 = 列表里属于本 Listing 的变体数）。
+- `fact_keyword_slot_hourly`（小时级坑位，支撑「查坑位/推排名」页 24h×7d 网格）：
+  `monitor-keyword-query` 是**只读**接口，只返回「已开启监控的词」的快照，
+  当前 SIF 账号未开任何监控词，返回空 list。
+  → **下一步条件**：在 SIF 前台对目标词（如 `lumbar pillow`）**开启坑位监控**，
+  等其积累出小时级快照后再灌。这是**账号侧操作，代码绕不过**。
 
 ---
 

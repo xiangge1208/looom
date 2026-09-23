@@ -116,8 +116,11 @@ docs/       侦察产出（SPEC / DATA_DICTIONARY / DORIS_SETUP）
 
 | 文件 | 内容 |
 |---|---|
-| `docs/SPEC.md` | 页面清单、接口契约、权限模型 |
-| `docs/DATA_DICTIONARY.md` | 55 张表的字段定义与设计依据 |
+| `docs/SPEC.md` | 页面清单、**原站**接口契约、权限模型 |
+| `docs/DORIS_SCHEMA_DESIGN.md` | **表结构权威文档**。§15 全表字段清单、§16 日粒度补表与三个占比 Bug 的修法 |
+| `docs/MODULE_DATA_FLOW.md` | 按功能看数据流：每个页面要哪几张表、表从哪个源来、就绪度 |
+| `docs/DORIS_SCHEMA_GAP_ANALYSIS.md` | 缺口盘点（含两张「表已建、数据待源」的表与取不到数的原因） |
+| `docs/DATA_DICTIONARY.md` | ⚠️ 设计期快照，已停更（schema-07 起的新表不在里面）。查字段以 `DORIS_SCHEMA_DESIGN.md` §15 为准 |
 | `docs/DORIS_SETUP.md` | Doris 接入步骤与**踩过的 8 个坑** |
 | `docs/NAMING.md` | 表名字段名规范 |
 

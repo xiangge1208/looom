@@ -113,18 +113,144 @@ export class TrafficService {
             color: dictMap.get(item.channel)?.extra || null }
         : null
 
-    const recRows = await this.db.query<any>(
-      `SELECT p.rec_title, c.display_name_cn, c.short_code,
-        SUM(p.ratio) AS ratio, SUM(p.campaign_cnt) AS campaign_cnt,
-SUM(p.keyword_cnt) AS keyword_cnt
-    FROM fact_asin_rec_column_period p
-     LEFT JOIN dim_recommend_column c
-       ON c.rec_title = p.rec_title AND c.country = p.country
-     WHERE p.asin IN (${asins.map(() => '?').join(', ')}) AND p.country = ?
-     GROUP BY p.rec_title, c.display_name_cn, c.short_code
-        ORDER BY ratio DESC`,
+    /**
+     * 推荐专栏分布。
+     *
+     * ⚠️ 两个独立的坑，都会让页面上的占比超过 100%：
+     *
+     * 坑 1：不能跨日期 SUM。
+     *   这张表是「混合粒度」的：虽然查询参数是月，但实测源接口返回逐日 stat_date，
+     *   且只存有值的天（稀疏），所以同一个 (asin, rec_title) 会有多行。
+     *   累加 N 天就得到 N 倍的值。修法：先定位最新一天，只取那一天。
+     *
+     * 坑 2：**不能跨变体 SUM**（本次修的就是这个）。
+     *   `ratio` 是「该专栏占**该 ASIN 自己**推荐流量的比例」，每个 ASIN 各自合计 = 1.0
+     *   （实测 B01NBNDC1T 组内 10 个变体，逐个 SUM(ratio) 都是 1）。
+     *   按父体查时组内 10 个变体的 ratio 直接相加 → 合计 1000%，
+     *   页面显示「顾客常看 633%」。
+     *
+     *   修法与上面的渠道查询保持一致：**不要聚合占比本身，而是带着权重回来、
+     *   在应用层按权重归一**。权重取该变体当月的总流量得分（channel='total'）——
+     *   流量大的变体，它的专栏构成对整组更有代表性。
+     *
+     *   ⚠️ 不能用「变体数」做等权平均：组内变体流量差 3 个数量级
+     *   （实测 50,031 vs 185），等权会让长尾变体的构成主导结果。
+     *
+     *   ⚠️ 加权平均**只还原源数据本身的量纲，不做归一化补偿**。
+     *   真实采集的 ASIN 每个 ratio 合计恰好 1.0，所以整组也是 1.0；
+     *   但 seed 数据（`B0SEED*`）的 ratio 是随机生成的、**逐个 ASIN 合计只有 0.22~0.50**，
+     *   所以 seed ASIN 的整组合计也就是 0.3 左右 —— 这是 seed 本身的问题，
+     *   不是这里算错了，别看到 30% 就来"修"。判断依据：
+     *   `SELECT asin, SUM(ratio) FROM fact_asin_rec_column_period GROUP BY asin, stat_date`
+     *   逐个 ASIN 不到 1 的，整组也不会到 1。
+     *
+     *   ⚠️ **分母必须是「组内全部变体的权重和」这个常数，不是「有该专栏的变体权重和」**。
+     *   各变体的专栏集合是稀疏且不同的（实测同一天 10 个变体分别只有
+     *   2/4/5/5/5/5/6/6/6/7 个专栏，但每个自己合计都是 1.0）。
+     *   若按专栏分别拿各自的权重做分母，等于每个专栏独立归一，
+     *   合计会再次超过 1（实测 1.34）。用常数分母才有
+     *   Σ_专栏 = Σ_变体(w × 1.0) / Σ_变体(w) = 1.0。
+     *   语义上也更对：某变体没有某专栏 = 该专栏在它身上占比 0，应当参与拉低均值，
+     *   而不是把它从分母里剔除。
+     *
+     * campaign_cnt / keyword_cnt 是当日快照的**计数**不是占比，跨变体去重求和才对，
+     * 所以它们仍然 SUM —— 与 ratio 的处理方式不同，这是有意的。
+     */
+    const recPh = asins.map(() => '?').join(', ')
+    const recLatest = await this.db.queryOne<{ d: string }>(
+      `SELECT MAX(stat_date) AS d
+         FROM fact_asin_rec_column_period
+        WHERE asin IN (${recPh}) AND country = ?`,
       [...asins, country],
     )
+
+    /**
+     * 权重表：变体 → 当月总流量得分。
+     *
+     * 缺权重的变体（该月无流量行）回落权重 1，而不是丢掉它 ——
+     * 丢掉会让它的专栏构成完全不参与，页面上少几个专栏；
+     * 回落 1 相对于动辄上万的得分近似于忽略，但至少专栏本身不会消失。
+     */
+    const weightRows = recLatest?.d
+      ? await this.db.query<any>(
+          `SELECT asin, SUM(score) AS w
+             FROM fact_asin_traffic_channel
+            WHERE country = ? AND time_piece_type = 'month' AND time_piece_value = ?
+              AND channel = 'total' AND asin IN (${recPh})
+            GROUP BY asin`,
+          [country, month, ...asins],
+        )
+      : []
+    const weightOf = new Map<string, number>(
+      weightRows.map((r: any) => [String(r.asin), Number(r.w ?? 0)]),
+    )
+
+    const recRaw = recLatest?.d
+      ? await this.db.query<any>(
+          `SELECT p.asin, p.rec_title, p.ratio,
+                  c.display_name_cn, c.short_code,
+                  p.campaign_cnt, p.keyword_cnt
+             FROM fact_asin_rec_column_period p
+        LEFT JOIN dim_recommend_column c
+               ON c.rec_title = p.rec_title AND c.country = p.country
+            WHERE p.asin IN (${recPh}) AND p.country = ? AND p.stat_date = ?`,
+          [...asins, country, recLatest.d],
+        )
+      : []
+
+    /**
+     * 归一分母：**该日有推荐专栏数据的变体**的权重和（常数，与专栏无关）。
+     *
+     * 只统计 recRaw 里出现过的变体 —— 一个当月有流量但当日没抓到专栏数据的变体，
+     * 它的权重不该进分母，否则会把所有专栏占比按比例压小。
+     */
+    const asinsWithRec = new Set<string>(recRaw.map((r: any) => String(r.asin)))
+    const totalWeight = [...asinsWithRec].reduce(
+      (acc, a) => acc + (weightOf.get(a) || 1),
+      0,
+    )
+
+    // 按专栏聚合：占比走加权平均（常数分母），计数走求和
+    const recAgg = new Map<string, any>()
+    for (const r of recRaw) {
+      const key = String(r.rec_title)
+      const cur =
+        recAgg.get(key) ??
+        {
+          rec_title: r.rec_title,
+          display_name_cn: r.display_name_cn,
+          short_code: r.short_code,
+          weighted: 0,
+          hasRatio: false,
+          campaign_cnt: null as number | null,
+          keyword_cnt: null as number | null,
+        }
+      // 字典字段可能只在部分行上有（LEFT JOIN 未命中时为 NULL），取第一个非空
+      cur.display_name_cn ??= r.display_name_cn
+      cur.short_code ??= r.short_code
+
+      const w = weightOf.get(String(r.asin)) || 1
+      const ratio = r.ratio === null || r.ratio === undefined ? null : Number(r.ratio)
+      if (ratio !== null) {
+        cur.weighted += ratio * w
+        cur.hasRatio = true
+      }
+      // ⚠️ NULL 不能当 0 累加：全组都无源时要保持 NULL 让前端显示「—」
+      if (r.campaign_cnt !== null && r.campaign_cnt !== undefined) {
+        cur.campaign_cnt = (cur.campaign_cnt ?? 0) + Number(r.campaign_cnt)
+      }
+      if (r.keyword_cnt !== null && r.keyword_cnt !== undefined) {
+        cur.keyword_cnt = (cur.keyword_cnt ?? 0) + Number(r.keyword_cnt)
+      }
+      recAgg.set(key, cur)
+    }
+
+    const recRows = [...recAgg.values()]
+      .map((r: any) => ({
+        ...r,
+        ratio: r.hasRatio && totalWeight > 0 ? r.weighted / totalWeight : null,
+      }))
+      .sort((a: any, b: any) => (b.ratio ?? -1) - (a.ratio ?? -1))
 
     return {
       asin,
@@ -341,6 +467,125 @@ SUM(p.keyword_cnt) AS keyword_cnt
   }
 
   /**
+   * 日粒度序列（价格 / BSR / 流量 / 口碑 / 运营事件）。
+   *
+   * 同时服务两个图表 —— 它们要的是同一份数据，只是窗口不同：
+   *   「查流量结构」的 60 天价格与流量复合图
+   *   「运营时光机」的 83 天因果图
+   * 所以不拆两个端点，由调用方给 days 裁剪。
+   *
+   * ⚠️ **只按单个 ASIN 查，不做变体组聚合**。价格/BSR/评分是
+   * 单个 listing 的属性，跨变体求和或取平均都没有业务含义
+   * （16 个变体价格从 12.9 到 28.5，平均出来的数字不对应任何真实商品）。
+   * 传父体就返回父体自己的序列。
+   *
+   * 列的口径警告（哪些列稀疏、ldPrice 为什么拆两列、bsr 与 subBsr 的区别）
+   * 详见 `db/schema-10-daily-grain.sql` 的表头与列注释。
+   *
+   * 返回「dates[] 时间轴 + 各指标等长数组」，与 ops_get_asin_traffic_trend
+   * 的口径一致，前端按下标对齐。
+   */
+  async getDailyTrend(asin: string, country: string, days?: number) {
+    // 上限 400 天：源一次最多给 12 个月（实测 356 天），再大也没有数据
+    const limit = Math.min(Math.max(Number(days) || 90, 1), 400)
+
+    /**
+     * 倒序取 limit 行再翻回正序 —— 直接 `ORDER BY stat_date ASC LIMIT n`
+     * 会拿到**最早**的 n 天，而图表要的是最近 n 天。
+     */
+    const rows = (
+      await this.db.query<any>(
+        `SELECT stat_date, buybox_price, deal_price, ld_price, ld_raw, prime_price,
+                total_score, nf_score, nf_ratio, ad_score, ad_ratio,
+                sp_score, rec_sp_score, sb_score, sbv_score,
+                bsr, sub_bsr, sub_bsr_cat, cat_name,
+                star, review_num, seller_num,
+                woot, title_img, coupon_info, promotion, buybox_seller,
+                bought_in_past_month
+           FROM fact_asin_daily_snapshot
+          WHERE asin = ? AND country = ?
+          ORDER BY stat_date DESC
+          LIMIT ${limit}`,
+        [asin, country],
+      )
+    ).reverse()
+
+    const num = (v: any) => (v === null || v === undefined ? null : Number(v))
+    const col = (f: (r: any) => any) => rows.map(f)
+    const fmtDay = (v: any) => {
+      if (!v) return null
+      // Doris 的 DATE 经 mysql2 读回是 Date 对象，String() 会得到英文串
+      if (v instanceof Date) {
+        const p = (x: number) => String(x).padStart(2, '0')
+        return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`
+      }
+      return String(v).slice(0, 10)
+    }
+
+    return {
+      asin,
+      country,
+      days: rows.length,
+      /** 时间轴。下面所有数组与它等长同序，按下标对齐 */
+      dates: col((r) => fmtDay(r.stat_date)),
+      price: {
+        buybox: col((r) => num(r.buybox_price)),
+        deal: col((r) => num(r.deal_price)),
+        /** ⚠️ 稀疏：实测 356 天里仅 36 天有秒杀。NULL 表示当天无秒杀，画图要断线不补 0 */
+        ld: col((r) => num(r.ld_price)),
+        /** 秒杀时段等信息的原始串，鼠标悬停时展示 */
+        ldRaw: col((r) => r.ld_raw ?? null),
+        prime: col((r) => num(r.prime_price)),
+      },
+      traffic: {
+        total: col((r) => num(r.total_score)),
+        nf: col((r) => num(r.nf_score)),
+        nfRatio: col((r) => num(r.nf_ratio)),
+        ad: col((r) => num(r.ad_score)),
+        adRatio: col((r) => num(r.ad_ratio)),
+        sp: col((r) => num(r.sp_score)),
+        recSp: col((r) => num(r.rec_sp_score)),
+        sb: col((r) => num(r.sb_score)),
+        sbv: col((r) => num(r.sbv_score)),
+      },
+      rank: {
+        /** 大类 BSR（实测 Home & Kitchen，9~122） */
+        bsr: col((r) => num(r.bsr)),
+        /** 小类 BSR（实测 Pillow Inserts，恒 1~2） */
+        subBsr: col((r) => num(r.sub_bsr)),
+        catName: rows.length ? (rows[rows.length - 1].cat_name ?? null) : null,
+        subBsrCat: rows.length ? (rows[rows.length - 1].sub_bsr_cat ?? null) : null,
+      },
+      reputation: {
+        star: col((r) => num(r.star)),
+        reviewNum: col((r) => num(r.review_num)),
+        sellerNum: col((r) => num(r.seller_num)),
+      },
+      /**
+       * 运营事件。前端用散点标在因果图上，所以这里给「稀疏点列表」
+       * 而不是等长数组 —— 事件天数远少于总天数（实测 356 天里
+       * 标题图片变更 14 天、促销 9 天），等长数组绝大多数是 null，
+       * 前端还得自己过滤一遍。
+       */
+      events: rows
+        .map((r: any) => ({
+          date: fmtDay(r.stat_date),
+          titleImg: r.title_img ?? null,
+          coupon: r.coupon_info ?? null,
+          promotion: r.promotion ?? null,
+          woot: num(r.woot),
+          buyboxSeller: r.buybox_seller ?? null,
+        }))
+        .filter(
+          (e) =>
+            e.titleImg !== null || e.coupon !== null || e.promotion !== null || e.woot === 1,
+        ),
+      /** 近30天销量分档下界。⚠️ 不是精确值，原站以 "30,000+" 展示 */
+      boughtInPastMonth: col((r) => num(r.bought_in_past_month)),
+    }
+  }
+
+  /**
    * 把输入的 ASIN 解析成「要统计的 ASIN 集合」。
    *
    * 流量数据是子体维度的，但用户可能输入父体（想看整个变体组）。
@@ -386,6 +631,31 @@ SUM(p.keyword_cnt) AS keyword_cnt
    *
    * @param asins 限定范围的 ASIN 列表；不传则取全站点最新月（调用方需知后果）
    */
+  /**
+   * 该 ASIN（或变体组）有流量数据的月份列表，倒序。
+   *
+   * 「流量时光机」需要它：前端得知道哪些月份可选，
+   * 否则用户只能盲猜月份，选到没数据的月就是一片空白。
+   *
+   * 只返回**确实有数据**的月份 —— 不按 min/max 补全中间空月，
+   * 因为各 ASIN 的采集起点不同，补出来的空月点进去还是空的。
+   */
+  async listAvailableMonths(asin: string, country: string) {
+    const { asins, isGroup } = await this.resolveAsinScope(asin, country)
+    if (!asins.length) {
+      return { asin, country, isGroup, months: [] as string[] }
+    }
+    const rows = await this.db.query<{ m: string }>(
+      `SELECT DISTINCT time_piece_value AS m
+         FROM fact_asin_traffic_channel
+        WHERE country = ? AND time_piece_type = 'month'
+          AND asin IN (${asins.map(() => '?').join(', ')})
+        ORDER BY m DESC`,
+      [country, ...asins],
+    )
+    return { asin, country, isGroup, months: rows.map((r) => r.m) }
+  }
+
   private async latestMonth(country: string, asins?: string[]): Promise<string> {
     if (asins && asins.length) {
       const r = await this.db.queryOne<any>(

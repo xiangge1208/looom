@@ -107,11 +107,28 @@ echo "      完成。"
 #   schema-04 关键词域重建（DROP+CREATE）→ RESET_KEYWORD_DOMAIN=1
 #   schema-05 大表分区迁移（搬数据+RENAME）→ RUN_PARTITION_MIGRATION=1
 #   schema-07 M13 返工（RENAME + INSERT SELECT）→ 见下方单独处理
-# 通配符 schema-0[!457]-*.sql 排除这三个；将来有 schema-1x 需改成显式列表。
+#
+# ⚠️ 这里从 `schema-0[!457]-*.sql` 通配符改成了**显式列表**。
+#    原通配符只能匹配 schema-0x，schema-10 起会被静默漏掉 ——
+#    表建不出来但脚本正常退出，是最难查的那种失败。
+#    新增 schema 文件时必须往这个数组里加一行。
 echo "[3/4] 建表..."
-for f in "$ROOT_DIR"/db/schema-0[!457]-*.sql; do
-  [ -e "$f" ] || continue
-  echo "      执行 $(basename "$f")"
+SCHEMA_FILES=(
+  schema-01-system.sql
+  schema-02-business.sql
+  schema-03-gap-tables.sql
+  schema-06-m13-wordpick.sql
+  schema-08-fix-garbled-comments.sql
+  schema-09-rec-column-trend.sql
+  schema-10-daily-grain.sql
+)
+for name in "${SCHEMA_FILES[@]}"; do
+  f="$ROOT_DIR/db/$name"
+  if [ ! -e "$f" ]; then
+    echo "      ⚠️  缺少 $name —— 请确认文件是否被删或改名（本脚本按显式列表执行）"
+    continue
+  fi
+  echo "      执行 $name"
   run_sql < "$f"
 done
 

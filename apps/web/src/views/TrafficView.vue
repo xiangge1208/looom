@@ -3,10 +3,13 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   businessApi,
+  type DailyTrend,
+  type KeywordAttribution,
   type TrafficStructure,
   type TrafficVariantRow,
 } from '@/api/business'
 import AsinSearchBar from '@/components/AsinSearchBar.vue'
+import BaseChart from '@/components/BaseChart.vue'
 import QuerySkeleton from '@/components/QuerySkeleton.vue'
 import AiAnalysisCard from '@/components/AiAnalysisCard.vue'
 
@@ -35,23 +38,95 @@ const viewMode = ref<'stack' | 'split'>('split')
 /** 分列模式下是否在条内显示得分数字（原站是个勾选框，默认勾上） */
 const showScore = ref(true)
 
+/**
+ * 「流量时光机」：可选月份列表 + 当前选中的月份。
+ *
+ * 之前这个页面只能看最新月，月份选择器缺失 —— 后端一直支持 timePieceValue，
+ * 只是前端从不传。这里补上：月份列表只含确实有数据的月，选空月没有意义。
+ */
+const months = ref<string[]>([])
+const currentMonth = ref<string>('')
+
 async function search(v: string) {
   asin.value = v
   loading.value = true
   tableDim.value = 'variant'
   try {
-    const [st, vt] = await Promise.all([
+    /**
+     * 月份列表、首屏数据、日粒度序列、归因一起拉。
+     *
+     * ⚠️ 日粒度和归因用 allSettled 而不是塞进上面的 all —— 它们依赖
+     * 本次新建的表，某个 ASIN 没灌数时会返回空/报错，不该把整页拖垮。
+     * 前者失败只是少两个模块，总览三块分布图仍然可用。
+     */
+    const [st, vt, mo] = await Promise.all([
       businessApi.trafficStructure(v),
-      businessApi.trafficVariants(v, 'US', 'variant'),
+      businessApi.trafficVariants(v, undefined, 'variant'),
+      businessApi.trafficMonths(v),
     ])
     data.value = st
     variantRows.value = vt.rows ?? []
     dimensions.value = vt.dimensions ?? []
+    months.value = mo.months ?? []
+    // 后端返回的就是它实际用的月份，以它为准（可能与 months[0] 不同）
+    currentMonth.value = st.timePieceValue ?? months.value[0] ?? ''
     router.replace({ query: { ...route.query, asin: v } })
+
+    const [dailyRes, attrRes] = await Promise.allSettled([
+      businessApi.trafficDaily(v, dailyDays.value),
+      businessApi.keywordAttribution({ asin: v, limit: 30 }),
+    ])
+    daily.value = dailyRes.status === 'fulfilled' ? dailyRes.value : null
+    attribution.value = attrRes.status === 'fulfilled' ? attrRes.value : null
   } catch {
     data.value = null
     variantRows.value = []
     dimensions.value = []
+    months.value = []
+    currentMonth.value = ''
+    daily.value = null
+    attribution.value = null
+  } finally {
+    loading.value = false
+  }
+}
+
+/**
+ * 日粒度复合图 + 流量归因表的状态。
+ *
+ * 数据源是本次新建的 fact_asin_daily_snapshot 与
+ * fact_asin_keyword_attribution，只灌了部分 ASIN，所以两者都可能为 null，
+ * 模板里必须判空（不要假设有数据）。
+ */
+const daily = ref<DailyTrend | null>(null)
+const attribution = ref<KeywordAttribution | null>(null)
+/** 窗口天数。原站这张图是 60 天，给 30/60/90 三档便于对比 */
+const dailyDays = ref(60)
+
+async function onDailyDaysChange(d: number) {
+  dailyDays.value = d
+  if (!asin.value) return
+  try {
+    daily.value = await businessApi.trafficDaily(asin.value, d)
+  } catch {
+    daily.value = null
+  }
+}
+
+/**
+ * 切换月份 —— 流量时光机的核心交互。
+ *
+ * 只重拉总览三块分布图。变体表格走的是另一个接口（trafficVariants），
+ * 它目前不接受时间参数，所以保持不变，不做假的联动。
+ */
+async function onMonthChange(m: string) {
+  if (!asin.value || !m) return
+  loading.value = true
+  try {
+    data.value = await businessApi.trafficStructure(asin.value, undefined, m)
+    currentMonth.value = data.value.timePieceValue ?? m
+  } catch {
+    // 保留上一次的数据，只提示失败 —— 比整页清空更可用
   } finally {
     loading.value = false
   }
@@ -68,7 +143,8 @@ async function loadDimension(dim: string) {
   if (!asin.value) return
   tableLoading.value = true
   try {
-    const vt = await businessApi.trafficVariants(asin.value, 'US', dim)
+    // country 交给 API 层的默认站点，不要在这里写死 'US'
+    const vt = await businessApi.trafficVariants(asin.value, undefined, dim)
     variantRows.value = vt.rows ?? []
   } catch {
     variantRows.value = []
@@ -223,6 +299,167 @@ function rowSubtitle(row: any): string {
   const vals = Object.values(row.features ?? {}) as string[]
   return vals.join(' | ')
 }
+
+/**
+ * 日粒度复合图：价格 + 流量 + BSR + 运营事件，四个量纲挤在一张图里。
+ *
+ * 三条 Y 轴（原站也是这个布局）：
+ *   轴 0 左  流量得分（柱状，自然/广告堆叠）—— 量级上万
+ *   轴 1 右  价格（折线）—— 量级十几
+ *   轴 2 右  BSR（折线，**倒置**）—— 名次越小越好，不倒置的话"变好"会往下走，反直觉
+ *
+ * 运营事件用 scatter 打在流量柱顶部，而不是 markLine 竖线 ——
+ * 竖线在 60 个点位上会糊成一片，散点可以 hover 看详情。
+ */
+const dailyOption = computed(() => {
+  const d = daily.value
+  if (!d || !d.dates.length) return null
+
+  const t = d.traffic
+  const money = (v: any) => (v === null || v === undefined ? '-' : `$${Number(v).toFixed(2)}`)
+
+  /**
+   * 事件散点的 Y 值取当天的总流量得分 —— 让点落在柱子顶端。
+   * 当天没有得分就跳过这个点（画在 0 处会贴底，看不出对应哪根柱子）。
+   */
+  const idxOf = new Map(d.dates.map((s, i) => [s, i]))
+  const eventPoints = d.events
+    .map((e) => {
+      const i = idxOf.get(e.date)
+      if (i === undefined) return null
+      const y = t.total[i]
+      if (y === null || y === undefined) return null
+      const labels: string[] = []
+      if (e.titleImg !== null) labels.push('改标题/主图')
+      if (e.coupon) labels.push(`优惠券 ${e.coupon}`)
+      if (e.promotion) labels.push(e.promotion)
+      if (e.woot === 1) labels.push('Woot 活动')
+      return { value: [i, y], name: labels.join('、') }
+    })
+    .filter(Boolean) as Array<{ value: [number, number]; name: string }>
+
+  return {
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'cross' },
+      // 默认 formatter 会把三个量纲混成一串看不出单位，这里按系列名分别格式化
+      formatter: (ps: any[]) => {
+        if (!ps?.length) return ''
+        const i = ps[0].dataIndex
+        const lines = [`<b>${d.dates[i]}</b>`]
+        for (const p of ps) {
+          if (p.value === null || p.value === undefined) continue
+          const n = p.seriesName as string
+          const raw = Array.isArray(p.value) ? p.value[1] : p.value
+          if (n.includes('价')) lines.push(`${p.marker}${n}：${money(raw)}`)
+          else if (n.includes('BSR')) lines.push(`${p.marker}${n}：#${raw}`)
+          else if (n === '运营动作') lines.push(`${p.marker}<b>${p.data?.name ?? '运营动作'}</b>`)
+          else lines.push(`${p.marker}${n}：${Math.round(Number(raw)).toLocaleString()}`)
+        }
+        // 秒杀时段只在原始串里，有就补一行
+        const ldRaw = d.price.ldRaw[i]
+        if (ldRaw) lines.push(`秒杀：${ldRaw}`)
+        return lines.join('<br/>')
+      },
+    },
+    legend: { bottom: 0, itemWidth: 12, itemHeight: 8, textStyle: { fontSize: 11 } },
+    grid: { left: 56, right: 88, top: 24, bottom: 56 },
+    xAxis: { type: 'category', data: d.dates, axisLabel: { fontSize: 10 } },
+    yAxis: [
+      {
+        type: 'value',
+        name: '流量得分',
+        nameTextStyle: { fontSize: 10 },
+        axisLabel: { fontSize: 10, formatter: (v: number) => (v >= 1000 ? `${v / 1000}k` : String(v)) },
+        splitLine: { lineStyle: { type: 'dashed' } },
+      },
+      {
+        type: 'value',
+        name: '价格',
+        position: 'right',
+        nameTextStyle: { fontSize: 10 },
+        axisLabel: { fontSize: 10, formatter: (v: number) => `$${v}` },
+        splitLine: { show: false },
+      },
+      {
+        type: 'value',
+        name: 'BSR',
+        position: 'right',
+        offset: 44,
+        // ⚠️ 倒置：BSR 越小越好，正序会让"排名变好"表现为折线下探
+        inverse: true,
+        nameTextStyle: { fontSize: 10 },
+        axisLabel: { fontSize: 10, formatter: (v: number) => `#${v}` },
+        splitLine: { show: false },
+      },
+    ],
+    // 60 个以上点位时给缩放条，否则 x 轴标签糊成一团
+    dataZoom:
+      d.dates.length > 45
+        ? [{ type: 'slider', height: 16, bottom: 26, start: 50, end: 100 }]
+        : undefined,
+    series: [
+      {
+        name: '自然流量',
+        type: 'bar',
+        stack: 'traffic',
+        yAxisIndex: 0,
+        data: t.nf,
+        itemStyle: { color: '#1AB364' },
+        barMaxWidth: 14,
+      },
+      {
+        name: '广告流量',
+        type: 'bar',
+        stack: 'traffic',
+        yAxisIndex: 0,
+        data: t.ad,
+        itemStyle: { color: '#F0AA11' },
+        barMaxWidth: 14,
+      },
+      {
+        name: '购物车价',
+        type: 'line',
+        yAxisIndex: 1,
+        data: d.price.buybox,
+        symbol: 'none',
+        lineStyle: { width: 1.6, color: '#3B82F6' },
+        itemStyle: { color: '#3B82F6' },
+      },
+      {
+        name: '秒杀价',
+        type: 'line',
+        yAxisIndex: 1,
+        data: d.price.ld,
+        // ⚠️ connectNulls 保持 false：稀疏日（实测 356 天仅 36 天有秒杀）
+        //    连起来会画出一条"每天都在秒杀"的假线
+        connectNulls: false,
+        symbol: 'circle',
+        symbolSize: 5,
+        lineStyle: { width: 0 },
+        itemStyle: { color: '#D95140' },
+      },
+      {
+        name: `大类 BSR${d.rank.catName ? `（${d.rank.catName}）` : ''}`,
+        type: 'line',
+        yAxisIndex: 2,
+        data: d.rank.bsr,
+        symbol: 'none',
+        lineStyle: { width: 1.4, color: '#8C6FE6' },
+        itemStyle: { color: '#8C6FE6' },
+      },
+      {
+        name: '运营动作',
+        type: 'scatter',
+        yAxisIndex: 0,
+        data: eventPoints,
+        symbol: 'pin',
+        symbolSize: 20,
+        itemStyle: { color: '#E2521E' },
+      },
+    ],
+  }
+})
 </script>
 
 <template>
@@ -234,6 +471,24 @@ function rowSubtitle(row: any): string {
 
     <!-- 加载骨架：请求飞行期间避免页面空白 -->
     <QuerySkeleton v-if="loading && !data" />
+
+    <!--
+      流量时光机：按月回看这个 Listing 的流量结构。
+      只列出确实有数据的月份 —— 各 ASIN 采集起点不同，补全中间空月会让用户选到空页。
+    -->
+    <div v-if="data && months.length > 1" class="tm-bar">
+      <span class="tm-label">流量时光机</span>
+      <el-select
+        v-model="currentMonth"
+        size="small"
+        style="width: 132px"
+        :disabled="loading"
+        @change="onMonthChange"
+      >
+        <el-option v-for="m in months" :key="m" :label="m" :value="m" />
+      </el-select>
+      <span class="tm-hint">共 {{ months.length }} 个月有数据</span>
+    </div>
 
     <template v-if="data">
       <!--
@@ -325,6 +580,86 @@ function rowSubtitle(row: any): string {
         <p class="hint muted">
           推荐专栏是动态实体：原站没有固定枚举，专栏标题由后端下发，新标题会自动入库。
         </p>
+      </div>
+
+      <!--
+        区块 1.5：日粒度复合图。
+        数据来自本次新建的 fact_asin_daily_snapshot，只灌了部分 ASIN，
+        所以 daily 为空时整块不渲染（而不是显示一张空图）。
+      -->
+      <div v-if="daily && daily.days" class="card">
+        <div class="card-head">
+          <div class="head-left">
+            <h2 class="sec-title">价格、流量与运营动作</h2>
+            <el-radio-group
+              :model-value="dailyDays"
+              size="small"
+              @update:model-value="onDailyDaysChange(Number($event))"
+            >
+              <el-radio-button :value="30">30 天</el-radio-button>
+              <el-radio-button :value="60">60 天</el-radio-button>
+              <el-radio-button :value="90">90 天</el-radio-button>
+            </el-radio-group>
+          </div>
+          <span class="muted small">共 {{ daily.days }} 天</span>
+        </div>
+        <BaseChart v-if="dailyOption" :option="dailyOption" height="360px" />
+        <p class="hint muted">
+          三条纵轴量纲不同：左轴流量得分（柱状，自然 + 广告堆叠），右轴价格，最右轴 BSR
+          <b>已倒置</b>（名次越小越靠前，所以线往上走代表排名变好）。
+          橙色图钉是运营动作，悬停看详情。秒杀价是稀疏点不连线 —— 只有真正做了秒杀的那几天才有。
+        </p>
+      </div>
+
+      <!--
+        区块 1.6：流量变化归因。
+        原站在「查流量(词)」页用它回答「为什么这个词的流量变了」。
+      -->
+      <div v-if="attribution && attribution.items.length" class="card">
+        <div class="card-head">
+          <div class="head-left">
+            <h2 class="sec-title">流量变化归因</h2>
+            <span class="muted small">
+              {{ attribution.statDate }} · {{ attribution.granularity === 'month' ? '月度' : '日度' }}
+            </span>
+          </div>
+          <span class="muted small">{{ attribution.items.length }} 个词</span>
+        </div>
+        <el-table :data="attribution.items" size="small" max-height="420">
+          <el-table-column label="流量词" min-width="180">
+            <template #default="{ row }">
+              <div class="kw-cell">
+                <span class="kw">{{ row.keyword }}</span>
+                <span v-if="row.translateKeyword" class="muted small">{{ row.translateKeyword }}</span>
+              </div>
+            </template>
+          </el-table-column>
+          <el-table-column label="流量变化" width="128" align="right">
+            <template #default="{ row }">
+              <!-- 正负用颜色区分，并显式带符号 —— 光看数字容易漏掉负号 -->
+              <span
+                v-if="row.contriChange !== null"
+                class="mono"
+                :class="row.contriChange >= 0 ? 'up' : 'down'"
+              >
+                {{ row.contriChange >= 0 ? '+' : '' }}{{ Math.round(row.contriChange).toLocaleString() }}
+              </span>
+              <span v-else class="muted">—</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="周搜索量" width="112" align="right">
+            <template #default="{ row }">
+              <span class="mono">{{ row.searchVolume?.toLocaleString() ?? '—' }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="影响原因" min-width="300">
+            <template #default="{ row }">
+              <span v-if="row.reasonSummary">{{ row.reasonSummary }}</span>
+              <!-- 源没归因时说清楚是"没给原因"，不是"没有原因" -->
+              <span v-else class="muted">源未给出归因</span>
+            </template>
+          </el-table-column>
+        </el-table>
       </div>
 
       <!-- 区块 2：流量结构表格 -->
@@ -544,6 +879,24 @@ function rowSubtitle(row: any): string {
 </template>
 
 <style scoped>
+/* 流量时光机的月份选择条 */
+.tm-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.tm-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tm-hint {
+  font-size: 12px;
+  color: var(--text-muted, #909399);
+}
+
 .card {
   margin-bottom: 16px;
 }
@@ -879,5 +1232,31 @@ function rowSubtitle(row: any): string {
 .hint {
   margin: 10px 0 0;
   font-size: 12px;
+}
+
+/* ---- 流量变化归因表 ---- */
+
+.small {
+  font-size: 11.5px;
+}
+
+.kw-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  line-height: 1.35;
+}
+
+.kw-cell .kw {
+  font-weight: 500;
+}
+
+/* 涨跌用颜色区分。绿涨红跌，与页面其他处的流量色一致（#1AB364 / #D95140） */
+.up {
+  color: #1ab364;
+}
+
+.down {
+  color: #d95140;
 }
 </style>

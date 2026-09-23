@@ -102,6 +102,62 @@ export interface TrafficStructure {
   }[]
 }
 
+// ---- 查推荐专栏 ----
+//
+// 对应原站 /recommend。契约见 docs/SPEC_REC_COLUMN_UI.md §6。
+//
+// ⚠️ 当前数据层只支撑一部分列（见 docs/AUDIT_REC_COLUMN_DATA.md）：
+//   ratio        ✅ 有源（ops_get_listing_traffic_overview 的 recommend 对象）
+//   campaignCnt  ⚠️ 该源不提供，为 null —— 前端必须显示「—」而不是 0
+//   keywordCnt   ⚠️ 同上
+//   按天趋势     ⚠️ 需 ETL 扩展，暂无
+// 所以 null 与 0 必须区别渲染：0 是「真的没有」，null 是「我们没这个数据」。
+
+export interface RecColumnRow {
+  /** 专栏英文原文，也是原站请求参数 */
+  recTitle: string
+  /** 中文展示名。专栏是动态实体，没有中文名时回落英文原文 */
+  name: string
+  shortCode: string
+  /** 流量占比（0~1 小数）。同组各专栏相加为 1 */
+  ratio: number | null
+  /** 广告活动数。null = 数据源不提供，不要渲染成 0 */
+  campaignCount: number | null
+  /** 广告词数。null 同上 */
+  keywordCount: number | null
+  /** 按天趋势序列。null 元素 = 当天该专栏无曝光（画图要断线，不能补 0） */
+  campaignTrends?: (number | null)[] | null
+  keywordTrends?: (number | null)[] | null
+  /** 行尾当前数：取最近有效值，不是数组末位（末位可能是 null） */
+  lastCampaignCount?: number | null
+  lastKeywordCount?: number | null
+}
+
+export interface RecColumnData {
+  asin: string
+  country: string
+  /** 数据截止日 */
+  statDate: string | null
+  /** 趋势序列共用的日期轴（与 campaignTrends/keywordTrends 同长同序） */
+  dates: string[]
+  /** 三个计数卡 */
+  overview: {
+    recCount: number
+    campaignCount: number | null
+    keywordCount: number | null
+  }
+  columns: RecColumnRow[]
+  /**
+   * 数据完备度标记，供前端决定哪些列显示「数据待补」。
+   * 不靠前端猜 —— 后端知道自己查了什么表。
+   */
+  coverage: {
+    hasRatio: boolean
+    hasCounts: boolean
+    hasTrends: boolean
+  }
+}
+
 export interface KeywordRow {
   /** 可空：多数源接口不返回 keyword_id。不要用它做主键或请求参数 */
   keywordId: string | null
@@ -145,6 +201,85 @@ export function setDefaultCountry(c: string | null | undefined) {
   if (c && /^[A-Z]{2}$/.test(c)) defaultCountry = c
 }
 
+/** 数组元素可空 —— 稀疏日（当天无秒杀/无 SB 曝光）是 null 不是 0，画图要断线 */
+type Series = (number | null)[]
+
+/**
+ * 日粒度序列。dates 是时间轴，各指标数组与它**等长同序、按下标对齐**。
+ * events 例外：它是稀疏点列表（只含真正有事件的天）。
+ */
+export interface DailyTrend {
+  asin: string
+  country: string
+  days: number
+  dates: string[]
+  price: {
+    buybox: Series
+    deal: Series
+    /** 稀疏：实测 356 天仅 36 天有秒杀 */
+    ld: Series
+    /** 秒杀原始串，含时段信息，如 "14.99_0_当日19:35-次日07:35" */
+    ldRaw: (string | null)[]
+    prime: Series
+  }
+  traffic: {
+    total: Series
+    nf: Series
+    nfRatio: Series
+    ad: Series
+    adRatio: Series
+    sp: Series
+    recSp: Series
+    sb: Series
+    sbv: Series
+  }
+  rank: {
+    /** 大类 BSR */
+    bsr: Series
+    /** 小类 BSR */
+    subBsr: Series
+    catName: string | null
+    subBsrCat: string | null
+  }
+  reputation: { star: Series; reviewNum: Series; sellerNum: Series }
+  /** 运营事件（稀疏，不与 dates 等长） */
+  events: Array<{
+    date: string
+    titleImg: number | null
+    coupon: string | null
+    promotion: string | null
+    woot: number | null
+    buyboxSeller: string | null
+  }>
+  boughtInPastMonth: Series
+}
+
+export interface KeywordAttribution {
+  asin: string
+  country: string
+  granularity: string
+  statDate: string | null
+  /** 无数据时给出原因说明，不要把空表显示成「无变化」 */
+  dataScope?: string
+  items: Array<{
+    keyword: string
+    translateKeyword: string | null
+    /** 流量变化量，可负 */
+    contriChange: number | null
+    contriChangeRatio: number | null
+    contriChangeTotal: number | null
+    score: number | null
+    scoreBefore: number | null
+    scoreRatio: number | null
+    searchVolume: number | null
+    searchRank: number | null
+    /** 预格式化的中文原因，可直接渲染。null = 源未归因 */
+    reasonSummary: string | null
+    changeReasons: string | null
+    positive: number | null
+  }>
+}
+
 /** 供各 api 方法做默认值用，调用时求值以拿到最新偏好 */
 const dc = () => defaultCountry
 
@@ -164,6 +299,17 @@ export const businessApi = {
     })
   },
 
+  /**
+   * 该 ASIN 有流量数据的月份列表（倒序）。
+   * 「流量时光机」用它填充月份选择器 —— 只列确实有数据的月，避免用户选到空月。
+   */
+  trafficMonths(asin: string, country = dc()) {
+    return request<{ asin: string; country: string; isGroup: boolean; months: string[] }>({
+      url: '/business/traffic/months',
+      params: { asin, country },
+    })
+  },
+
   trafficVariants(asin: string, country = dc(), dimension?: string) {
     return request<TrafficVariants>({
       url: '/business/traffic/variants',
@@ -178,6 +324,8 @@ export const businessApi = {
     limit?: number
     keyword?: string
     sortBy?: string
+    /** 排序方向。后端一直支持，之前前端没传，导致表头「升序」点了没反应 */
+    order?: 'asc' | 'desc'
   }) {
     return request<KeywordPage>({ url: '/business/keywords', params })
   },
@@ -192,6 +340,49 @@ export const businessApi = {
     return request<any>({
       url: `/business/keywords/${encodeURIComponent(keyword)}/source`,
       params: { country, asin },
+    })
+  },
+
+  /**
+   * 日粒度序列。一个端点服务两张图（60 天价格复合图 / 83 天因果图），
+   * 差别只在 days —— 数据是同一份，不要各自再取一遍。
+   *
+   * 返回「dates[] 时间轴 + 各指标等长数组」，按下标对齐；
+   * events 是**稀疏点列表**（只含真正有事件的天），不与 dates 等长。
+   */
+  trafficDaily(asin: string, days = 60, country = dc()) {
+    return request<DailyTrend>({
+      url: '/business/traffic/daily',
+      params: { asin, days, country },
+    })
+  },
+
+  /** 流量变化归因（关键词 / 流量变化 / 影响原因） */
+  keywordAttribution(params: {
+    asin: string
+    country?: string
+    granularity?: 'month' | 'day'
+    statDate?: string
+    limit?: number
+  }) {
+    return request<KeywordAttribution>({
+      url: '/business/keywords/attribution',
+      params: { country: dc(), ...params },
+    })
+  },
+
+  /** ABA 搜索趋势（自身量 + 词根综合量 + 排名）。本期只有端点，页面下一期 */
+  abaTrend(keyword: string, country = dc(), granularity = 'week') {
+    return request<{
+      keyword: string
+      periods: number
+      dates: string[]
+      searchesNum: (number | null)[]
+      extSearchesNum: (number | null)[]
+      searchesRank: (number | null)[]
+    }>({
+      url: `/business/keywords/${encodeURIComponent(keyword)}/aba-trend`,
+      params: { country, granularity },
     })
   },
 
@@ -224,8 +415,15 @@ export const businessApi = {
     return request<any>({ url: '/business/timeline', params: { asin, country } })
   },
 
+  /**
+   * 查推荐专栏。
+   *
+   * 沿用既有路由 /business/recommendations（原站 /recommend）——
+   * 不新开一个页面：仓库里 RecommendationsView 的标题已经是「查推荐专栏」，
+   * 再建一个会让同一导航下出现两个同名页。
+   */
   recommendations(asin: string, country = dc()) {
-    return request<{ columns: any[] }>({
+    return request<RecColumnData>({
       url: '/business/recommendations',
       params: { asin, country },
     })
