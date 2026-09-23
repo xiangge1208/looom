@@ -92,6 +92,21 @@ const trafficKeys = [
   { key: 'nf', name: '自然', color: '#1AB364' },
   { key: 'ad', name: '广告', color: '#F0AA11' },
 ]
+
+/**
+ * 销量展示文案。
+ *
+ * 后端返回两个字段：boughtLabel 是原站分档串（「10,000+」），
+ * boughtLowerBound 是分档下界整数。实测 label 有 99.8% 为 NULL、
+ * lower_bound 零 NULL，所以 label 缺失时用下界自己拼「N+」，
+ * 否则这一列对绝大多数真实数据都是空的。
+ */
+function boughtText(row: any): string {
+  if (row?.boughtLabel) return row.boughtLabel
+  const lb = row?.boughtLowerBound
+  if (lb === null || lb === undefined) return ''
+  return `${Number(lb).toLocaleString()}+`
+}
 </script>
 
 <template>
@@ -168,10 +183,19 @@ const trafficKeys = [
           </template>
         </el-table-column>
 
+        <!--
+          销量：优先用 boughtLabel（原站分档串），没有就用 boughtLowerBound 拼「N+」。
+          实测 bought_label 有 99.8% 是 NULL，只看 label 会让这一列几乎全空。
+        -->
         <el-table-column label="近一月销量" width="122">
           <template #default="{ row }">
-            <el-tag v-if="row.boughtLabel" :type="row.best.bought ? 'success' : 'info'" size="small" effect="plain">
-              {{ row.boughtLabel }}
+            <el-tag
+              v-if="boughtText(row)"
+              :type="row.best.bought ? 'success' : 'info'"
+              size="small"
+              effect="plain"
+            >
+              {{ boughtText(row) }}
             </el-tag>
             <span v-else class="muted">—</span>
           </template>

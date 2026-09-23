@@ -94,19 +94,24 @@ const out = {
     `SELECT * FROM fact_asin_keyword_overview WHERE country = ? AND asin IN (${ph}) ORDER BY asin, time_piece_value, channel`,
     scope,
   ),
+  // 关键词族：按**变体组**查，不是只查父体 ——
+  // 实测 16 个变体各有自己的头部词（50 个去重词），只看父体会漏掉 46 个
   fact_asin_keyword_snapshot: await q(
-    `SELECT * FROM fact_asin_keyword_snapshot WHERE country = ? AND asin = ? ORDER BY listing_score_ratio DESC`,
-    [COUNTRY, ASIN],
+    `SELECT * FROM fact_asin_keyword_snapshot WHERE country = ? AND asin IN (${ph})
+      ORDER BY asin, listing_score_ratio DESC`,
+    scope,
   ),
   dim_keyword: await q(
     `SELECT k.* FROM dim_keyword k
       WHERE k.country = ? AND k.keyword IN (
-        SELECT keyword FROM fact_asin_keyword_snapshot WHERE country = ? AND asin = ?)`,
-    [COUNTRY, COUNTRY, ASIN],
+        SELECT keyword FROM fact_asin_keyword_snapshot
+         WHERE country = ? AND asin IN (${ph}))`,
+    [COUNTRY, COUNTRY, ...childAsins],
   ),
   fact_asin_keyword_score: await q(
-    `SELECT * FROM fact_asin_keyword_score WHERE country = ? AND asin = ? ORDER BY score DESC`,
-    [COUNTRY, ASIN],
+    `SELECT * FROM fact_asin_keyword_score WHERE country = ? AND asin IN (${ph})
+      ORDER BY asin, score DESC`,
+    scope,
   ),
   fact_keyword_rank_history: await q(
     `SELECT * FROM fact_keyword_rank_history WHERE country = ? AND asin = ? ORDER BY keyword, rank_type, stat_date`,
@@ -144,19 +149,51 @@ const out = {
     [COUNTRY, ASIN],
   ),
   rel_rec_column_campaign_keyword: await q(
-    `SELECT * FROM rel_rec_column_campaign_keyword WHERE country = ? AND asin = ?`,
-    [COUNTRY, ASIN],
+    `SELECT * FROM rel_rec_column_campaign_keyword WHERE country = ? AND asin IN (${ph})`,
+    scope,
   ),
   dim_recommend_column: await q(
     `SELECT * FROM dim_recommend_column WHERE country = ? AND rec_title IN (
-        SELECT rec_title FROM rel_rec_column_campaign_keyword WHERE country = ? AND asin = ?)`,
-    [COUNTRY, COUNTRY, ASIN],
+        SELECT rec_title FROM rel_rec_column_campaign_keyword
+         WHERE country = ? AND asin IN (${ph}))`,
+    [COUNTRY, COUNTRY, ...childAsins],
+  ),
+
+  // ---- 广告域 ----
+  // 曝光表的 variant_asin 是子体，按变体组展开；其余几张按活动/小组 ID 关联
+  fact_ad_search_term_exposure: await q(
+    `SELECT * FROM fact_ad_search_term_exposure
+      WHERE country = ? AND variant_asin IN (${ph})
+      ORDER BY score DESC, keyword, stat_date`,
+    scope,
+  ),
+  rel_asin_keyword_variant_exposure: await q(
+    `SELECT * FROM rel_asin_keyword_variant_exposure
+      WHERE country = ? AND parent_asin = ?`,
+    [COUNTRY, ASIN],
   ),
   dim_ad_campaign: await q(
-    `SELECT * FROM dim_ad_campaign WHERE country = ? AND encrypt_campaign_id IN (
-        SELECT sp_campaign_id FROM fact_asin_keyword_snapshot
-         WHERE country = ? AND asin = ? AND sp_campaign_id IS NOT NULL)`,
-    [COUNTRY, COUNTRY, ASIN],
+    `SELECT DISTINCT c.* FROM dim_ad_campaign c
+      WHERE c.country = ? AND c.encrypt_campaign_id IN (
+        SELECT encrypt_campaign_id FROM fact_ad_search_term_exposure
+         WHERE country = ? AND variant_asin IN (${ph})
+           AND encrypt_campaign_id IS NOT NULL)`,
+    [COUNTRY, COUNTRY, ...childAsins],
+  ),
+  dim_ad_product_ad: await q(
+    `SELECT DISTINCT p.* FROM dim_ad_product_ad p
+      WHERE p.country = ? AND p.encrypt_ad_id IN (
+        SELECT encrypt_ad_id FROM fact_ad_search_term_exposure
+         WHERE country = ? AND variant_asin IN (${ph}))`,
+    [COUNTRY, COUNTRY, ...childAsins],
+  ),
+  rel_ad_campaign_product_ad: await q(
+    `SELECT * FROM rel_ad_campaign_product_ad
+      WHERE country = ? AND encrypt_campaign_id IN (
+        SELECT encrypt_campaign_id FROM fact_ad_search_term_exposure
+         WHERE country = ? AND variant_asin IN (${ph})
+           AND encrypt_campaign_id IS NOT NULL)`,
+    [COUNTRY, COUNTRY, ...childAsins],
   ),
 }
 

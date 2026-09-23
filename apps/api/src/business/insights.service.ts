@@ -181,94 +181,206 @@ export class InsightsService {
 
   /** 查推荐专栏：某 ASIN 出现在哪些推荐位 */
   async getRecommendColumns(asin: string, country: string) {
-    const rows = await this.db.query<any>(
-      `SELECT p.rec_title, p.stat_date, p.ratio, p.campaign_cnt, p.keyword_cnt,
-       c.display_name_cn, c.short_code
-      FROM fact_asin_rec_column_period p
-     LEFT JOIN dim_recommend_column c
-        ON c.rec_title = p.rec_title AND c.country = p.country
-    WHERE p.asin = ? AND p.country = ?
-        ORDER BY p.rec_title, p.stat_date`,
+    /**
+     * 两个源合并，不是二选一。
+     *
+     *   fact_asin_rec_column_period        → ratio（流量占比）
+     *   rel_rec_column_campaign_keyword    → campaign_cnt / keyword_cnt（关联计数）
+     *
+     * 原先的实现是「period 查不到就整体回落到关联表」，结果是只要有一个源缺，
+     * 另一个源的数据也被丢掉。实际上两者互补：一个有占比没计数，
+     * 一个有计数没占比，按 rec_title 外连起来才是完整的一行。
+     *
+     * ⚠️ 缺失一律用 null，不要用 0。0 会被读成「真的是 0 个活动」，
+     * 而 null 表示「这个源不提供这个值」—— 前端据此显示「—」。
+     */
+    const ratioRows = await this.db.query<any>(
+      `SELECT p.rec_title, p.stat_date, p.ratio,
+              c.display_name_cn, c.short_code
+         FROM fact_asin_rec_column_period p
+    LEFT JOIN dim_recommend_column c
+           ON c.rec_title = p.rec_title AND c.country = p.country
+        WHERE p.asin = ? AND p.country = ?
+          AND p.stat_date = (
+                SELECT MAX(stat_date) FROM fact_asin_rec_column_period
+                 WHERE asin = ? AND country = ?
+              )
+     ORDER BY p.ratio DESC`,
+      [asin, country, asin, country],
+    )
+
+    const countRows = await this.db.query<any>(
+      `SELECT r.rec_title,
+              COUNT(DISTINCT r.encrypt_campaign_id) AS campaign_cnt,
+              COUNT(DISTINCT r.keyword)             AS keyword_cnt,
+              c.display_name_cn, c.short_code
+         FROM rel_rec_column_campaign_keyword r
+    LEFT JOIN dim_recommend_column c
+           ON c.rec_title = r.rec_title AND c.country = r.country
+        WHERE r.asin = ? AND r.country = ?
+     GROUP BY r.rec_title, c.display_name_cn, c.short_code`,
       [asin, country],
     )
 
-    // 按专栏分组
-    const byColumn = new Map<string, any>()
-    for (const r of rows) {
-      if (!byColumn.has(r.rec_title)) {
-        byColumn.set(r.rec_title, {
-     recTitle: r.rec_title,
-   // 推荐专栏是动态实体，新标题可能没有中文名，回落到英文原文
-   name: r.display_name_cn ?? r.rec_title,
-   shortCode: r.short_code ?? 'other',
-     points: [],
-          totalRatio: 0,
- })
-      }
-      const col = byColumn.get(r.rec_title)
-      const ratio = r.ratio === null ? 0 : Number(r.ratio)
-      col.points.push({
-        date: fmtDate(r.stat_date),
-        ratio,
- campaignCount: Number(r.campaign_cnt ?? 0),
-      keywordCount: Number(r.keyword_cnt ?? 0),
-      })
-      col.totalRatio += ratio
-    }
+    /**
+     * 按天趋势（第三源）。
+     *
+     * 表里每 (asin, 专栏, 日期) 一行，直接给前端两条序列。
+     * 取自原站 rec/recView，服务端已做「跨该 ASIN 全部关键词去重」的逐日聚合 ——
+     * 这一层 PG 侧算不出来（sif-cli 的 asin-keyword-list 忽略分页、恒返回 4 条词），
+     * 详见 db/schema-09-rec-column-trend.sql 的说明。
+     *
+     * ⚠️ 这里返回的 trend 数组与 dates 严格同长同序，null 表示**当天无曝光**。
+     * 前端必须断线而不是补 0 —— 补 0 会画成贴底的线，读起来像「有数据但为 0」。
+     */
+    const trendRows = await this.db.query<any>(
+      `SELECT rec_title, stat_date, campaign_cnt, keyword_cnt,
+              last_campaign_cnt, last_keyword_cnt
+         FROM fact_rec_column_trend
+        WHERE asin = ? AND country = ?
+        ORDER BY stat_date`,
+      [asin, country],
+    )
+
+    // 日期轴：所有专栏共用，取并集排序（各专栏的日期集合本应相同，
+    // 但用并集更稳，缺的那天在各自序列里补 null）
+    //
+    // fmtDate 的签名是 string | null（它要处理脏数据），但 stat_date 是主键的一部分、
+    // 不可能为 null。这里显式收窄一次，免得下游每处索引都要处理 null 分支。
+    const dateOf = (v: any): string => fmtDate(v) ?? ''
+
+    const trendDates = [...new Set(trendRows.map((r: any) => dateOf(r.stat_date)))].sort()
 
     /**
-     * 回落：`fact_asin_rec_column_period` 只有 8 个 ASIN 的数据，
-     * 且它的 stat_date / campaign_cnt / keyword_cnt 三列确证无源
-     * （源 `web-asin-flow-overview` 是区间聚合，既无日期维度也无计数），
-     * 所以绝大多数 ASIN 查出来是空。
+     * 专栏 → 该专栏的逐日行映射。
      *
-     * 而 `rel_rec_column_campaign_keyword` 有 9,086 行真实关联、覆盖 2,026 个
-     * ASIN —— 它回答不了「占比随时间怎么变」，但能回答「这个 ASIN 出现在
-     * 哪些推荐专栏、各由哪些广告活动和关键词带来」，这已经是页面的主干信息。
-     *
-     * 所以 period 表查不到时改用它，并**明确不编造 ratio**：
-     * 占比无源就留 null，让前端显示「—」而不是 0%（0% 会被读成「没有流量」）。
+     * ⚠️ 同时存一份「代表行」（`any`）。因为 last_campaign_cnt / last_keyword_cnt
+     * 是**窗口级**字段、按行重复存，取任意一行都一样；而下面算行尾数字时
+     * 需要的是「行」而不是「日期→行」的映射 ——
+     * 曾经写成 `const c = trendMap.get(t)` 然后 `c?.last_campaign_cnt`，
+     * 那恒为 undefined，`??` 就静默回落到 rel_ 表那个已知不准的计数
+     * （词覆盖只有原站 1/12），页面上显示的是**有值的错数**，比报错更难发现。
      */
-    if (!byColumn.size) {
-      const alt = await this.db.query<any>(
-        `SELECT r.rec_title,
-                COUNT(DISTINCT r.encrypt_campaign_id) AS campaign_cnt,
-                COUNT(DISTINCT r.keyword) AS keyword_cnt,
-                c.display_name_cn, c.short_code
-           FROM rel_rec_column_campaign_keyword r
-      LEFT JOIN dim_recommend_column c
-             ON c.rec_title = r.rec_title AND c.country = r.country
-          WHERE r.asin = ? AND r.country = ?
-       GROUP BY r.rec_title, c.display_name_cn, c.short_code
-       ORDER BY keyword_cnt DESC, campaign_cnt DESC`,
-        [asin, country],
-      )
-      for (const r of alt) {
-        byColumn.set(r.rec_title, {
-          recTitle: r.rec_title,
-          name: r.display_name_cn ?? r.rec_title,
-          shortCode: r.short_code ?? 'other',
-          // 没有时间序列，给一个不带日期的汇总点
-          points: [
-            {
-              date: null,
-              ratio: null,
-              campaignCount: Number(r.campaign_cnt ?? 0),
-              keywordCount: Number(r.keyword_cnt ?? 0),
-            },
-          ],
-          totalRatio: 0,
-          /** 标记数据来自关联表而非占比表，占比不可用 */
-          ratioAvailable: false,
-        })
-      }
-      // 关联表口径下没有占比，按关键词数排序（上面 SQL 已排好）
-      return { asin, country, columns: [...byColumn.values()] }
+    const trendMap = new Map<string, { byDate: Record<string, any>; any: any }>()
+    for (const r of trendRows) {
+      const t = String(r.rec_title)
+      if (!trendMap.has(t)) trendMap.set(t, { byDate: {}, any: r })
+      trendMap.get(t)!.byDate[dateOf(r.stat_date)] = r
     }
 
-    const columns = [...byColumn.values()].sort((a, b) => b.totalRatio - a.totalRatio)
+    /** 把某专栏的逐日行对齐到共享日期轴；没有该天的行 → null（无曝光） */
+    const align = (title: string, pick: (row: any) => number | null) => {
+      const g = trendMap.get(title)
+      return trendDates.map((d) => {
+        const hit = g?.byDate[d]
+        return hit ? pick(hit) : null
+      })
+    }
 
-    return { asin, country, columns }
+    const countMap = new Map<string, any>(countRows.map((r: any) => [r.rec_title, r]))
+    const ratioMap = new Map<string, any>(ratioRows.map((r: any) => [r.rec_title, r]))
+
+    // 三个源的专栏名取并集：某专栏可能只出现在其中一两个源里
+    const titles = [
+      ...new Set([...ratioMap.keys(), ...countMap.keys(), ...trendMap.keys()]),
+    ]
+
+    const num = (v: any) => (v === null || v === undefined ? null : Number(v))
+
+    const columns = titles
+      .map((t) => {
+        const a = ratioMap.get(t)
+        const b = countMap.get(t)
+        const g = trendMap.get(t)
+
+        const campaignTrends = g ? align(t, (r) => num(r.campaign_cnt)) : undefined
+        const keywordTrends = g ? align(t, (r) => num(r.keyword_cnt)) : undefined
+
+        /**
+         * 行尾当前数取 last_*（原站另有此字段），**不是趋势数组末位**。
+         * 实测 Picks from Amazon Influencers 的 ct 末位是 null 而
+         * lastCampaignCnt=1 —— 取末位会显示成「—」，把有数据的行显示成无数据。
+         *
+         * 优先用趋势表的 last_*；没有趋势时回落到关联表的去重计数。
+         *
+         * ⚠️ 用 `g.any`（该专栏的任一行）而不是 `g` 本身 —— g 是
+         * {byDate, any} 的容器，直接取 .last_campaign_cnt 会得到 undefined。
+         */
+        const lastCampaign =
+          num(g?.any?.last_campaign_cnt) ?? num(b?.campaign_cnt)
+        const lastKeyword =
+          num(g?.any?.last_keyword_cnt) ?? num(b?.keyword_cnt)
+
+        return {
+          recTitle: t,
+          name: a?.display_name_cn ?? b?.display_name_cn ?? t,
+          shortCode: a?.short_code ?? b?.short_code ?? 'other',
+          ratio: num(a?.ratio),
+          /**
+           * 计数优先用趋势表里的「窗口内最近值」，它来自原站服务端的去重聚合，
+           * 比我们 rel_ 表按 (专栏,词,活动) 三元组去重算出来的准得多 ——
+           * 实测 rel_ 的词覆盖只有原站约 1/12（B07N7GDB6Q：3 vs 35）。
+           */
+          campaignCount: lastCampaign,
+          keywordCount: lastKeyword,
+          campaignTrends,
+          keywordTrends,
+          lastCampaignCount: lastCampaign,
+          lastKeywordCount: lastKeyword,
+        }
+      })
+      // 有占比的按占比降序，没占比的按词数降序排在后面（对齐原站主排序列）
+      .sort((x, y) => {
+        if (x.ratio !== null && y.ratio !== null) return y.ratio - x.ratio
+        if (x.ratio !== null) return -1
+        if (y.ratio !== null) return 1
+        return (y.keywordCount ?? 0) - (x.keywordCount ?? 0)
+      })
+
+    const statDate = ratioRows.length ? fmtDate(ratioRows[0].stat_date) : null
+
+    /**
+     * 三个计数卡。
+     *
+     * recCount 取并集大小（真实可数）；活动数与词数只有关联表能给，
+     * 而关联表的词覆盖实测只有原站的 ~1/12（3 vs 35，见 AUDIT_REC_COLUMN_DATA.md），
+     * 所以这两个数会明显偏小。coverage.hasCounts 让前端能标注这一点，
+     * 而不是让用户以为原站数据就这么少。
+     */
+    const allCampaigns = await this.db.queryOne<any>(
+      `SELECT COUNT(DISTINCT encrypt_campaign_id) AS c,
+              COUNT(DISTINCT keyword)             AS k
+         FROM rel_rec_column_campaign_keyword
+        WHERE asin = ? AND country = ?`,
+      [asin, country],
+    )
+
+    /**
+     * ⚠️ `COUNT()` 无行时返回 0，不是 NULL —— 直接用会把「关联表里没有这个 ASIN」
+     * 显示成「0 个广告活动」。所以用 countRows 是否为空来判断，
+     * 空则整体置 null，让前端显示「—」。
+     */
+    const hasCounts = countRows.length > 0
+    const hasTrends = trendRows.length > 0
+
+    return {
+      asin,
+      country,
+      statDate,
+      /** 趋势序列共用的日期轴。有趋势时才有值，前端画折线要用它当横轴 */
+      dates: trendDates,
+      overview: {
+        recCount: columns.length,
+        campaignCount: hasCounts ? num(allCampaigns?.c) : null,
+        keywordCount: hasCounts ? num(allCampaigns?.k) : null,
+      },
+      columns,
+      coverage: {
+        hasRatio: ratioRows.length > 0,
+        hasCounts,
+        hasTrends,
+      },
+    }
   }
 
   /** 竞品对比：把多个 ASIN 的已有指标并排放 */
@@ -285,12 +397,30 @@ export class InsightsService {
       [country, ...list],
     )
 
+    /**
+     * 分渠道流量。
+     *
+     * ⚠️ 必须按时间片过滤。该表唯一键含 (time_piece_type, time_piece_value)，
+     * 同一个 (asin, channel) 会有多个月的行。原先没有 time_piece_value 条件，
+     * 下面 `cur[t.channel] = ...` 会被后来的行覆写 ——
+     * 最终留下哪个月完全取决于 Doris 的返回顺序，结果不确定
+     * （同一请求两次可能拿到不同月份的数据）。
+     *
+     * 取每个 ASIN **各自**的最新月，而不是这批 ASIN 的全局最新月：
+     * 各 ASIN 数据进度常常不齐，用全局最新月会让落后的 ASIN 整行变空。
+     */
     const traffic = await this.db.query<any>(
-      `SELECT asin, channel, score, score_ratio
-    FROM fact_asin_traffic_channel
-        WHERE country = ? AND time_piece_type = 'month'
-     AND channel IN ('total','nf','ad') AND asin IN (${ph})`,
-      [country, ...list],
+      `SELECT t.asin, t.channel, t.score, t.score_ratio
+    FROM fact_asin_traffic_channel t
+         JOIN (
+           SELECT asin, MAX(time_piece_value) AS tv
+             FROM fact_asin_traffic_channel
+            WHERE country = ? AND time_piece_type = 'month' AND asin IN (${ph})
+            GROUP BY asin
+         ) m ON m.asin = t.asin AND m.tv = t.time_piece_value
+        WHERE t.country = ? AND t.time_piece_type = 'month'
+     AND t.channel IN ('total','nf','ad') AND t.asin IN (${ph})`,
+      [country, ...list, country, ...list],
     )
     const tMap = new Map<string, any>()
     for (const t of traffic) {
@@ -299,18 +429,27 @@ export class InsightsService {
       tMap.set(t.asin, cur)
     }
 
+    /**
+     * 销量。取每个 ASIN **各自**的最新月，与上面的 traffic 查询口径保持一致。
+     *
+     * 原先是「全站点最新月」的标量子查询，各 ASIN 数据进度不齐时，
+     * 落后的 ASIN 一行都查不到，销量列显示成空。
+     * 实测量化：US 站 38,484 个 ASIN 里有 7,040 个（18%）最新月落后于全局最新月，
+     * 也就是近两成的对比行销量是空的 —— 不是隐患，是已经在发生的数据缺失。
+     *
+     * 同时这也修掉一处口径不一致：流量按各自最新月、销量按全局最新月，
+     * 同一页面上两列可能来自不同月份，无法横向解读。
+     */
     const bought = await this.db.query<any>(
-      // 子查询过滤条件与外层一致（country + 同一批 ASIN）。
-      // ⚠️ 只按 country 取「全站点最新月」是隐患：各 ASIN 数据进度不齐时，
-      // 落后一个月的 ASIN 会查不到任何行，销量列显示成空。
-      // 详见 sales.service.ts 同一处的说明。
-      `SELECT asin, bought_lower_bound, bought_label
-         FROM fact_asin_bought_monthly
- WHERE country = ? AND asin IN (${ph})
-     AND stat_month = (
-           SELECT MAX(stat_month) FROM fact_asin_bought_monthly
+      `SELECT b.asin, b.stat_month, b.bought_lower_bound, b.bought_label
+         FROM fact_asin_bought_monthly b
+         JOIN (
+           SELECT asin, MAX(stat_month) AS mx
+             FROM fact_asin_bought_monthly
             WHERE country = ? AND asin IN (${ph})
-         )`,
+            GROUP BY asin
+         ) m ON m.asin = b.asin AND m.mx = b.stat_month
+        WHERE b.country = ? AND b.asin IN (${ph})`,
       [country, ...list, country, ...list],
     )
     const bMap = new Map(bought.map((b: any) => [b.asin, b]))
@@ -324,7 +463,25 @@ export class InsightsService {
       score: a.score === null ? null : Number(a.score),
       ratingNum: a.rating_num === null ? null : Number(a.rating_num),
       isBestSeller: !!a.is_best_seller,
+      /**
+       * 销量。
+       *
+       * ⚠️ 不能只返回 bought_label —— 实测 US 站 810,460 行里
+       * bought_label 有 808,567 行是 NULL（99.8%），而 bought_lower_bound 零 NULL。
+       * 原先只取 label，导致真实数据下销量列几乎全空。
+       *
+       * label 是原站的分档串（「10,000+」），只有部分行有；
+       * lower_bound 是分档下界整数，始终有值。
+       * 两个都下发：前端优先显示 label，没有就用 lower_bound 自己拼「N+」。
+       */
       boughtLabel: bMap.get(a.asin)?.bought_label ?? null,
+      boughtLowerBound:
+        bMap.get(a.asin)?.bought_lower_bound === undefined ||
+        bMap.get(a.asin)?.bought_lower_bound === null
+          ? null
+          : Number(bMap.get(a.asin).bought_lower_bound),
+      /** 该 ASIN 销量数据实际所属月份（各 ASIN 进度不齐，前端可提示截止月） */
+      boughtStatMonth: bMap.get(a.asin)?.stat_month ?? null,
       traffic: tMap.get(a.asin) ?? {},
     }))
 

@@ -24,6 +24,7 @@ const nextCursor = ref<string | null>(null)
 const hasMore = ref(false)
 const keywordFilter = ref('')
 const sortBy = ref('score')
+const sortOrder = ref<'asc' | 'desc'>('desc')
 const timePieceValue = ref<string | null>(null)
 
 /** 抽屉：某关键词的流量来源 */
@@ -47,6 +48,7 @@ async function load(reset = true) {
       limit: 20,
       keyword: keywordFilter.value || undefined,
       sortBy: sortBy.value,
+      order: sortOrder.value,
     })
     rows.value = reset ? res.items : [...rows.value, ...res.items]
     nextCursor.value = res.nextCursor
@@ -66,11 +68,18 @@ function search(v: string) {
   load(true)
 }
 
-/** 表头排序：切换时重新从头查，游标作废 */
+/**
+ * 表头排序：切换时重新从头查，游标作废。
+ *
+ * order 之前被解构出来就丢掉了，只更新 sortBy 不传方向 ——
+ * 后端默认 desc，所以点「升序」毫无反应。现在一起传下去。
+ */
 function onSortChange({ prop, order }: { prop: string; order: string | null }) {
   if (!order) return
   const map: Record<string, string> = { nfLastRank: 'rank', estSearchesNum: 'searches', listingScoreRatio: 'score' }
   sortBy.value = map[prop] ?? 'score'
+  // Element Plus 给的是 'ascending' / 'descending'
+  sortOrder.value = order === 'ascending' ? 'asc' : 'desc'
   load(true)
 }
 

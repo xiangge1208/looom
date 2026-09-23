@@ -15,7 +15,11 @@
 | `dict_` | **枚举字典表**。取值有限、变更极少 | `dict_traffic_channel` |
 | 无前缀 | **系统表**（平台自身运行）。沿用通用 SaaS 命名 | `users`、`credit_accounts` |
 
-废弃：`enum_`（统一用 `dict_`）、`sif_`（库名已是 `sif_replica`，无需再冠名）。
+废弃：`enum_`（统一用 `dict_`）、`sif_`（库名 `looom` 已能区分，无需再冠名）。
+
+> ⚠️ 本文档早期版本写库名为 `sif_replica`，那是设计阶段的暂定名。
+> **实际库名是 `looom`**（三个 o，与工作区目录同名）—— 同实例上还有个
+> 只差一个字母的 `loom` 库不属于本项目，见 [DORIS_SETUP.md §二](DORIS_SETUP.md)。
 
 ## 二、已识别的同实体异名（合并映射）
 

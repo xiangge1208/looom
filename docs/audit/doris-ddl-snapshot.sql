@@ -1,4 +1,20 @@
--- ===== ai_analyses (1 rows) =====
+-- =====================================================================
+-- looom 库全量 DDL 快照
+--
+-- 生成方式：逐表 SHOW CREATE TABLE + COUNT(*)，直连 Doris 120.24.248.175:9030
+--           ⚠️ 必须带 --default-character-set=utf8mb4，否则中文 COMMENT 会乱码
+-- 生成时间：2026-09-22
+-- 表数：65 张物理表 = 61 张逻辑表 + 4 张分区迁移残留
+--       残留清单见 docs/DORIS_SCHEMA_DESIGN.md §14.1
+--
+-- ⚠️ 上一版为 2026-09-21 的 59 张，已过期；且本次发现库里有 6 个列的
+--    COMMENT 被写坏（编码损坏），已由 db/schema-08-fix-garbled-comments.sql 修复。
+--
+-- 注意：本文件是只读快照，不要当 schema 源用。
+--       建表源文件是 db/schema-0*.sql，由 scripts/setup-doris.sh 执行。
+-- =====================================================================
+
+-- ===== ai_analyses (4 rows) =====
 CREATE TABLE `ai_analyses` (
   `id` bigint NOT NULL COMMENT "雪花 ID",
   `task_id` bigint NOT NULL COMMENT "关联 ai_tasks.id",
@@ -29,7 +45,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== ai_tasks (1 rows) =====
+-- ===== ai_tasks (4 rows) =====
 CREATE TABLE `ai_tasks` (
   `id` bigint NOT NULL COMMENT "雪花 ID",
   `user_id` bigint NOT NULL COMMENT "用户 ID",
@@ -129,7 +145,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== credit_transactions (3 rows) =====
+-- ===== credit_transactions (6 rows) =====
 CREATE TABLE `credit_transactions` (
   `id` bigint NOT NULL COMMENT "雪花 ID",
   `user_id` bigint NOT NULL COMMENT "用户 ID",
@@ -368,7 +384,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== dict_traffic_channel (12 rows) =====
+-- ===== dict_traffic_channel (13 rows) =====
 CREATE TABLE `dict_traffic_channel` (
   `code` varchar(32) NOT NULL COMMENT "枚举内部值",
   `name_cn` varchar(64) NULL COMMENT "中文展示名",
@@ -420,7 +436,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== dim_ad_campaign (5897 rows) =====
+-- ===== dim_ad_campaign (5928 rows) =====
 CREATE TABLE `dim_ad_campaign` (
   `encrypt_campaign_id` varchar(64) NOT NULL COMMENT "Sif 内部加密活动 ID（主键）",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -453,7 +469,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== dim_ad_product_ad (313 rows) =====
+-- ===== dim_ad_product_ad (337 rows) =====
 CREATE TABLE `dim_ad_product_ad` (
   `encrypt_ad_id` varchar(64) NOT NULL COMMENT "Sif 内部加密投放小组 ID（主键）",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -479,7 +495,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== dim_asin (59912 rows) =====
+-- ===== dim_asin (59951 rows) =====
 CREATE TABLE `dim_asin` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -519,7 +535,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== dim_asin_feature (43729 rows) =====
+-- ===== dim_asin_feature (43796 rows) =====
 CREATE TABLE `dim_asin_feature` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -571,7 +587,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== dim_keyword (13070 rows) =====
+-- ===== dim_keyword (13872 rows) =====
 CREATE TABLE `dim_keyword` (
   `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键，实测最大 128 字符）。ETL 需 btrim(lower()) 归一",
   `country` varchar(8) NOT NULL COMMENT "站点。⚠️ 必须进主键：实测 keyword_id 跨站点不唯一",
@@ -683,7 +699,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_ad_search_term_exposure (0 rows) =====
+-- ===== fact_ad_search_term_exposure (1887 rows) =====
 CREATE TABLE `fact_ad_search_term_exposure` (
   `encrypt_ad_id` varchar(64) NOT NULL COMMENT "投放小组 ID",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -716,7 +732,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_bought_monthly (809591 rows) =====
+-- ===== fact_asin_bought_monthly (810751 rows) =====
 CREATE TABLE `fact_asin_bought_monthly` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号（只存子体，父体销量由应用层聚合）",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -771,7 +787,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_keyword_overview (3713 rows) =====
+-- ===== fact_asin_keyword_overview (3745 rows) =====
 CREATE TABLE `fact_asin_keyword_overview` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -800,7 +816,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_keyword_score (19095 rows) =====
+-- ===== fact_asin_keyword_score (19155 rows) =====
 CREATE TABLE `fact_asin_keyword_score` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -834,7 +850,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_keyword_snapshot (19095 rows) =====
+-- ===== fact_asin_keyword_snapshot (19155 rows) =====
 CREATE TABLE `fact_asin_keyword_snapshot` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -877,7 +893,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_listing_snapshot (51880 rows) =====
+-- ===== fact_asin_listing_snapshot (52600 rows) =====
 CREATE TABLE `fact_asin_listing_snapshot` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -906,7 +922,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_multinf_daily (10911 rows) =====
+-- ===== fact_asin_multinf_daily (11015 rows) =====
 CREATE TABLE `fact_asin_multinf_daily` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -967,7 +983,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_multinf_keyword_variant (14935 rows) =====
+-- ===== fact_asin_multinf_keyword_variant (15176 rows) =====
 CREATE TABLE `fact_asin_multinf_keyword_variant` (
   `parent_asin` varchar(16) NOT NULL COMMENT "父体/主查 ASIN",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -1002,7 +1018,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_op_event (73607 rows) =====
+-- ===== fact_asin_op_event (74013 rows) =====
 CREATE TABLE `fact_asin_op_event` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -1058,7 +1074,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_subbsr_snapshot (1654767 rows) =====
+-- ===== fact_asin_subbsr_snapshot (1676452 rows) =====
 CREATE TABLE `fact_asin_subbsr_snapshot` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -1131,7 +1147,153 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_asin_traffic_channel (149460 rows) =====
+-- ===== fact_asin_subbsr_snapshot_new (1654767 rows) =====
+CREATE TABLE `fact_asin_subbsr_snapshot_new` (
+  `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
+  `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
+  `cat_name` varchar(255) NOT NULL COMMENT "子类目名称（原为动态 key）",
+  `stat_date` date NOT NULL COMMENT "统计日期。⚠️ 分区列，AUTO PARTITION 按月",
+  `bsr` bigint NULL COMMENT "BSR 排名",
+  `created_at` datetime NOT NULL COMMENT "入库时间"
+) ENGINE=OLAP
+UNIQUE KEY(`asin`, `country`, `cat_name`, `stat_date`)
+COMMENT 'ASIN 子类目 BSR 排名快照。⚠️ 原响应是动态 key 对象 {类目名:值}，入库须拆成行。按月自动分区'
+AUTO PARTITION BY RANGE (date_trunc(`stat_date`, 'month'))
+(PARTITION p20230101000000 VALUES [('2023-01-01'), ('2023-02-01')),
+PARTITION p20230201000000 VALUES [('2023-02-01'), ('2023-03-01')),
+PARTITION p20230301000000 VALUES [('2023-03-01'), ('2023-04-01')),
+PARTITION p20230401000000 VALUES [('2023-04-01'), ('2023-05-01')),
+PARTITION p20230501000000 VALUES [('2023-05-01'), ('2023-06-01')),
+PARTITION p20230601000000 VALUES [('2023-06-01'), ('2023-07-01')),
+PARTITION p20230701000000 VALUES [('2023-07-01'), ('2023-08-01')),
+PARTITION p20230801000000 VALUES [('2023-08-01'), ('2023-09-01')),
+PARTITION p20230901000000 VALUES [('2023-09-01'), ('2023-10-01')),
+PARTITION p20231001000000 VALUES [('2023-10-01'), ('2023-11-01')),
+PARTITION p20231101000000 VALUES [('2023-11-01'), ('2023-12-01')),
+PARTITION p20231201000000 VALUES [('2023-12-01'), ('2024-01-01')),
+PARTITION p20240101000000 VALUES [('2024-01-01'), ('2024-02-01')),
+PARTITION p20240201000000 VALUES [('2024-02-01'), ('2024-03-01')),
+PARTITION p20240301000000 VALUES [('2024-03-01'), ('2024-04-01')),
+PARTITION p20240401000000 VALUES [('2024-04-01'), ('2024-05-01')),
+PARTITION p20240501000000 VALUES [('2024-05-01'), ('2024-06-01')),
+PARTITION p20240601000000 VALUES [('2024-06-01'), ('2024-07-01')),
+PARTITION p20240701000000 VALUES [('2024-07-01'), ('2024-08-01')),
+PARTITION p20240801000000 VALUES [('2024-08-01'), ('2024-09-01')),
+PARTITION p20240901000000 VALUES [('2024-09-01'), ('2024-10-01')),
+PARTITION p20241001000000 VALUES [('2024-10-01'), ('2024-11-01')),
+PARTITION p20241101000000 VALUES [('2024-11-01'), ('2024-12-01')),
+PARTITION p20241201000000 VALUES [('2024-12-01'), ('2025-01-01')),
+PARTITION p20250101000000 VALUES [('2025-01-01'), ('2025-02-01')),
+PARTITION p20250201000000 VALUES [('2025-02-01'), ('2025-03-01')),
+PARTITION p20250301000000 VALUES [('2025-03-01'), ('2025-04-01')),
+PARTITION p20250401000000 VALUES [('2025-04-01'), ('2025-05-01')),
+PARTITION p20250501000000 VALUES [('2025-05-01'), ('2025-06-01')),
+PARTITION p20250601000000 VALUES [('2025-06-01'), ('2025-07-01')),
+PARTITION p20250701000000 VALUES [('2025-07-01'), ('2025-08-01')),
+PARTITION p20250801000000 VALUES [('2025-08-01'), ('2025-09-01')),
+PARTITION p20250901000000 VALUES [('2025-09-01'), ('2025-10-01')),
+PARTITION p20251001000000 VALUES [('2025-10-01'), ('2025-11-01')),
+PARTITION p20251101000000 VALUES [('2025-11-01'), ('2025-12-01')),
+PARTITION p20251201000000 VALUES [('2025-12-01'), ('2026-01-01')),
+PARTITION p20260101000000 VALUES [('2026-01-01'), ('2026-02-01')),
+PARTITION p20260201000000 VALUES [('2026-02-01'), ('2026-03-01')),
+PARTITION p20260301000000 VALUES [('2026-03-01'), ('2026-04-01')),
+PARTITION p20260401000000 VALUES [('2026-04-01'), ('2026-05-01')),
+PARTITION p20260501000000 VALUES [('2026-05-01'), ('2026-06-01')),
+PARTITION p20260601000000 VALUES [('2026-06-01'), ('2026-07-01')),
+PARTITION p20260701000000 VALUES [('2026-07-01'), ('2026-08-01')),
+PARTITION p20260801000000 VALUES [('2026-08-01'), ('2026-09-01')),
+PARTITION p20260901000000 VALUES [('2026-09-01'), ('2026-10-01')))
+DISTRIBUTED BY HASH(`asin`) BUCKETS 8
+PROPERTIES (
+"replication_allocation" = "tag.location.default: 1",
+"min_load_replica_num" = "-1",
+"is_being_synced" = "false",
+"storage_medium" = "hdd",
+"storage_format" = "V2",
+"inverted_index_storage_format" = "V3",
+"enable_unique_key_merge_on_write" = "true",
+"light_schema_change" = "true",
+"disable_auto_compaction" = "false",
+"group_commit_interval_ms" = "10000",
+"group_commit_data_bytes" = "134217728",
+"enable_mow_light_delete" = "false"
+);
+
+-- ===== fact_asin_subbsr_snapshot_old (1654767 rows) =====
+CREATE TABLE `fact_asin_subbsr_snapshot_old` (
+  `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
+  `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
+  `cat_name` varchar(255) NOT NULL COMMENT "子类目名称（原为动态 key）",
+  `stat_date` date NOT NULL COMMENT "统计日期。⚠️ 分区列，AUTO PARTITION 按月",
+  `bsr` bigint NULL COMMENT "BSR 排名",
+  `created_at` datetime NOT NULL COMMENT "入库时间"
+) ENGINE=OLAP
+UNIQUE KEY(`asin`, `country`, `cat_name`, `stat_date`)
+COMMENT 'ASIN 子类目 BSR 排名快照。⚠️ 原响应是动态 key 对象 {类目名:值}，入库须拆成行。按月自动分区'
+AUTO PARTITION BY RANGE (date_trunc(`stat_date`, 'month'))
+(PARTITION p20230101000000 VALUES [('2023-01-01'), ('2023-02-01')),
+PARTITION p20230201000000 VALUES [('2023-02-01'), ('2023-03-01')),
+PARTITION p20230301000000 VALUES [('2023-03-01'), ('2023-04-01')),
+PARTITION p20230401000000 VALUES [('2023-04-01'), ('2023-05-01')),
+PARTITION p20230501000000 VALUES [('2023-05-01'), ('2023-06-01')),
+PARTITION p20230601000000 VALUES [('2023-06-01'), ('2023-07-01')),
+PARTITION p20230701000000 VALUES [('2023-07-01'), ('2023-08-01')),
+PARTITION p20230801000000 VALUES [('2023-08-01'), ('2023-09-01')),
+PARTITION p20230901000000 VALUES [('2023-09-01'), ('2023-10-01')),
+PARTITION p20231001000000 VALUES [('2023-10-01'), ('2023-11-01')),
+PARTITION p20231101000000 VALUES [('2023-11-01'), ('2023-12-01')),
+PARTITION p20231201000000 VALUES [('2023-12-01'), ('2024-01-01')),
+PARTITION p20240101000000 VALUES [('2024-01-01'), ('2024-02-01')),
+PARTITION p20240201000000 VALUES [('2024-02-01'), ('2024-03-01')),
+PARTITION p20240301000000 VALUES [('2024-03-01'), ('2024-04-01')),
+PARTITION p20240401000000 VALUES [('2024-04-01'), ('2024-05-01')),
+PARTITION p20240501000000 VALUES [('2024-05-01'), ('2024-06-01')),
+PARTITION p20240601000000 VALUES [('2024-06-01'), ('2024-07-01')),
+PARTITION p20240701000000 VALUES [('2024-07-01'), ('2024-08-01')),
+PARTITION p20240801000000 VALUES [('2024-08-01'), ('2024-09-01')),
+PARTITION p20240901000000 VALUES [('2024-09-01'), ('2024-10-01')),
+PARTITION p20241001000000 VALUES [('2024-10-01'), ('2024-11-01')),
+PARTITION p20241101000000 VALUES [('2024-11-01'), ('2024-12-01')),
+PARTITION p20241201000000 VALUES [('2024-12-01'), ('2025-01-01')),
+PARTITION p20250101000000 VALUES [('2025-01-01'), ('2025-02-01')),
+PARTITION p20250201000000 VALUES [('2025-02-01'), ('2025-03-01')),
+PARTITION p20250301000000 VALUES [('2025-03-01'), ('2025-04-01')),
+PARTITION p20250401000000 VALUES [('2025-04-01'), ('2025-05-01')),
+PARTITION p20250501000000 VALUES [('2025-05-01'), ('2025-06-01')),
+PARTITION p20250601000000 VALUES [('2025-06-01'), ('2025-07-01')),
+PARTITION p20250701000000 VALUES [('2025-07-01'), ('2025-08-01')),
+PARTITION p20250801000000 VALUES [('2025-08-01'), ('2025-09-01')),
+PARTITION p20250901000000 VALUES [('2025-09-01'), ('2025-10-01')),
+PARTITION p20251001000000 VALUES [('2025-10-01'), ('2025-11-01')),
+PARTITION p20251101000000 VALUES [('2025-11-01'), ('2025-12-01')),
+PARTITION p20251201000000 VALUES [('2025-12-01'), ('2026-01-01')),
+PARTITION p20260101000000 VALUES [('2026-01-01'), ('2026-02-01')),
+PARTITION p20260201000000 VALUES [('2026-02-01'), ('2026-03-01')),
+PARTITION p20260301000000 VALUES [('2026-03-01'), ('2026-04-01')),
+PARTITION p20260401000000 VALUES [('2026-04-01'), ('2026-05-01')),
+PARTITION p20260501000000 VALUES [('2026-05-01'), ('2026-06-01')),
+PARTITION p20260601000000 VALUES [('2026-06-01'), ('2026-07-01')),
+PARTITION p20260701000000 VALUES [('2026-07-01'), ('2026-08-01')),
+PARTITION p20260801000000 VALUES [('2026-08-01'), ('2026-09-01')),
+PARTITION p20260901000000 VALUES [('2026-09-01'), ('2026-10-01')))
+DISTRIBUTED BY HASH(`asin`) BUCKETS 8
+PROPERTIES (
+"replication_allocation" = "tag.location.default: 1",
+"min_load_replica_num" = "-1",
+"is_being_synced" = "false",
+"storage_medium" = "hdd",
+"storage_format" = "V2",
+"inverted_index_storage_format" = "V3",
+"enable_unique_key_merge_on_write" = "true",
+"light_schema_change" = "true",
+"disable_auto_compaction" = "false",
+"group_commit_interval_ms" = "10000",
+"group_commit_data_bytes" = "134217728",
+"enable_mow_light_delete" = "false"
+);
+
+-- ===== fact_asin_traffic_channel (151917 rows) =====
 CREATE TABLE `fact_asin_traffic_channel` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点：US/UK/DE/FR/IT/ES/JP/CA/MX/AU/AE/SA/BR",
@@ -1163,24 +1325,25 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_keyword_bid_estimate (33019 rows) =====
-CREATE TABLE `fact_keyword_bid_estimate` (
+-- ===== fact_keyword_acos_estimate (33019 rows) =====
+CREATE TABLE `fact_keyword_acos_estimate` (
   `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）。ETL 需 btrim(lower()) 归一",
   `country` varchar(8) NOT NULL COMMENT "站点。⚠️ 必须进主键：keyword_id 跨站点不唯一",
-  `stat_week` date NOT NULL COMMENT "ABA 周起始日。源 data.weekDate，实测 100% 填充",
-  `match_type` varchar(32) NOT NULL COMMENT "投放类型：autoForSales_/legacyForSales_ × broad/phrase/exact 共 6 种",
+  `stat_week` date NOT NULL COMMENT "ABA 周起始日（周日）。源 data.weekDate，实测 6 个值 2026-07-26~2026-08-30",
+  `match_type` varchar(16) NOT NULL COMMENT "匹配方式：broad=广泛 / phrase=词组 / exact=精准。由源键名 *ForSales_<x> 拆出",
+  `bid_strategy` varchar(16) NOT NULL COMMENT "投放策略：auto=自动投放 / legacy=手动投放。由源键名前缀拆出。⚠️ 实测 13% 的词两者同值（源侧合并所致，非 ETL 问题）",
   `keyword_id` bigint NULL COMMENT "原站关键词 ID（普通列，仅供对账）",
-  `acos_start` double NULL COMMENT "ACOS 悲观档（值最大）。实测 91~92% 填充，0.0947~39.87",
-  `acos_median` double NULL COMMENT "ACOS 中位档。实测 0.034~9.19",
-  `acos_end` double NULL COMMENT "ACOS 乐观档（值最小）。实测 0.0017~4.17",
-  `cpa_start` decimal(12,4) NULL COMMENT "CPA 悲观档。实测 0.846~220.0",
-  `cpa_median` decimal(12,4) NULL COMMENT "CPA 中位档。实测 1.067~293.3",
-  `cpa_end` decimal(12,4) NULL COMMENT "CPA 乐观档。实测 1.333~366.7（故用 12,4 不用 10,2）",
+  `acos_start` double NULL COMMENT "ACOS 悲观档（三档中值最大）。实测 33,019 行满档，0.0847~1433.13",
+  `acos_median` double NULL COMMENT "ACOS 中位档。实测 0.0154~232.07",
+  `acos_end` double NULL COMMENT "ACOS 乐观档（三档中值最小）。实测 0.0003~76.25。⚠️ 100% 满足 start>median>end，按区间端点渲染会画反",
+  `cpa_start` decimal(12,4) NULL COMMENT "CPA 悲观档。实测 0.4541~5145.45",
+  `cpa_median` decimal(12,4) NULL COMMENT "CPA 中位档。实测 0.5838~5718.18",
+  `cpa_end` decimal(12,4) NULL COMMENT "CPA 乐观档。实测 0.7136~6290.91。⚠️ CPA 方向与 ACOS 相反，是递增的",
   `created_at` datetime NOT NULL COMMENT "入库时间",
-  INDEX idx_bid_kw (`keyword`) USING INVERTED
+  INDEX idx_acos_kw (`keyword`) USING INVERTED
 ) ENGINE=OLAP
-UNIQUE KEY(`keyword`, `country`, `stat_week`, `match_type`)
-COMMENT '关键词 ACOS/CPA 分档预估。源 web-keyword-conversion。start/median/end 是悲观/中位/乐观三档，非区间端点'
+UNIQUE KEY(`keyword`, `country`, `stat_week`, `match_type`, `bid_strategy`)
+COMMENT 'ACOS/CPA 三档预估（关键词×周×匹配×策略）。源 web-keyword-conversion。ACOS 递减、CPA 递增，非区间端点。原名 fact_keyword_bid_estimate（该名现留给真正的建议竞价表）'
 DISTRIBUTED BY HASH(`keyword`) BUCKETS 4
 PROPERTIES (
 "replication_allocation" = "tag.location.default: 1",
@@ -1197,7 +1360,43 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_keyword_competition_snapshot (21328 rows) =====
+-- ===== fact_keyword_bid_estimate (25074 rows) =====
+CREATE TABLE `fact_keyword_bid_estimate` (
+  `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）。ETL 需 btrim(lower()) 归一",
+  `country` varchar(8) NOT NULL COMMENT "站点。⚠️ 必须进主键",
+  `category_id` varchar(32) NOT NULL COMMENT "类目 ID（主键）。源 categorys[].categoryId。⚠️ 竞价与品类强相关，无类目维则数据无意义（页面说明第 1 条）",
+  `match_type` varchar(16) NOT NULL COMMENT "匹配方式：broad / phrase / exact。源 matchTypes 的键名",
+  `bid_strategy` varchar(16) NOT NULL COMMENT "投放策略。取值沿用**源 JSON 键名** auto / legacy（cpc/category 的 matchTypes.<match>.<strategy>），ETL 不做映射。对应页面 UI 的表述：auto=「提升与降低」/ legacy=「仅降低」与「固定」。⚠️ 原站已把「仅降低」与「固定」合并为一档（页面说明第 3 条），所以只有 2 个值；前端渲染时要按 UI 的表述映射",
+  `stat_month` varchar(7) NOT NULL COMMENT "统计月 YYYY-MM（主键）。⚠️ 用月不用周：源以周 ABA 为输入但**每月只更新一次**（页面说明第 4 条）",
+  `category_name` varchar(255) NULL COMMENT "类目名。源 categoryName",
+  `category_href` varchar(512) NULL COMMENT "类目链接。源 categoryHref",
+  `category_sale_num` bigint NULL COMMENT "该类目在售产品数。源 categorys[].saleNum。竞价大小与之相关（页面说明第 2 条）",
+  `bid_start` decimal(12,4) NULL COMMENT "建议竞价低档（$）。⚠️ 三档**递增**（实测样例 0.37→0.49→0.61），与 ACOS 的递减方向相反",
+  `bid_median` decimal(12,4) NULL COMMENT "建议竞价中档（$）",
+  `bid_end` decimal(12,4) NULL COMMENT "建议竞价高档（$）",
+  `source` varchar(32) NULL COMMENT "数据来源：seed=生成器造（本期全部）/ real=cpc/category 真实数据。⚠️ 前端必须据此显示「模拟数据」标记",
+  `created_at` datetime NOT NULL COMMENT "入库时间",
+  INDEX idx_bid2_kw (`keyword`) USING INVERTED
+) ENGINE=OLAP
+UNIQUE KEY(`keyword`, `country`, `category_id`, `match_type`, `bid_strategy`, `stat_month`)
+COMMENT '关键词建议竞价（关键词×类目×匹配×策略×月）。源 cpc/category，本期无真实数据走 seed。三档递增。与 fact_keyword_acos_estimate 是两个不同指标'
+DISTRIBUTED BY HASH(`keyword`) BUCKETS 8
+PROPERTIES (
+"replication_allocation" = "tag.location.default: 1",
+"min_load_replica_num" = "-1",
+"is_being_synced" = "false",
+"storage_medium" = "hdd",
+"storage_format" = "V2",
+"inverted_index_storage_format" = "V3",
+"enable_unique_key_merge_on_write" = "true",
+"light_schema_change" = "true",
+"disable_auto_compaction" = "false",
+"group_commit_interval_ms" = "10000",
+"group_commit_data_bytes" = "134217728",
+"enable_mow_light_delete" = "false"
+);
+
+-- ===== fact_keyword_competition_snapshot (21329 rows) =====
 CREATE TABLE `fact_keyword_competition_snapshot` (
   `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -1246,11 +1445,11 @@ CREATE TABLE `fact_keyword_conversion_funnel` (
   `click_shared` double NULL COMMENT "点击份额。实测 0.0242 ~ 0.9194",
   `conversion_shared` double NULL COMMENT "转化份额。实测 0.0021 ~ 1.0，填充 79.9%",
   `avg_kw_price` decimal(12,2) NULL COMMENT "关键词平均价。实测 6.74 ~ 793.70",
-  `max_kw_price` decimal(12,2) NULL COMMENT "关键词最高价。实测 max 35,690.36（故用 12,2）",
-  `min_kw_price` decimal(12,2) NULL COMMENT "关键词最低价。实测 0.87 ~ 59.90",
+  `max_kw_price` decimal(12,2) NULL COMMENT "该关键词下产品均价的最高档。落表 5,875 行（100%），实测最高 35,690.36",
+  `min_kw_price` decimal(12,2) NULL COMMENT "该关键词下产品均价的最低档。页面「产品均价」列三档之一。落表 5,875 行（100%），实测最低 0.87",
   `source` varchar(16) NULL COMMENT "数据来源。实测恒为 mix",
   `created_at` datetime NOT NULL COMMENT "入库时间",
-  `click_purchase_ratio` double NULL COMMENT "点击购买率（分母是点击数，区别于 search_purchase_ratio 的分母是搜索数）。源 clickPurchaseRatio，实测 100%，0~0.2877"
+  `click_purchase_ratio` double NULL COMMENT "点击购买率（分母是点击数，区别于 search_purchase_ratio 的分母是搜索数）。源 clickPurchaseRatio，落表 5,875 行（100%），实测 0~0.3876"
 ) ENGINE=OLAP
 UNIQUE KEY(`keyword`, `country`, `stat_week`)
 COMMENT '关键词 ABA 转化漏斗。改文本键后可灌 9,038 行（原 854 行 = 9.4%）'
@@ -1270,7 +1469,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_keyword_metric_snapshot (22320 rows) =====
+-- ===== fact_keyword_metric_snapshot (22321 rows) =====
 CREATE TABLE `fact_keyword_metric_snapshot` (
   `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -1283,16 +1482,17 @@ CREATE TABLE `fact_keyword_metric_snapshot` (
   `cpc_bid` decimal(12,2) NULL COMMENT "建议竞价。⚠️ 源 cpc 是 6 种投放组合的对象，需选投影",
   `click_purchase_ratio` double NULL COMMENT "点击转化率（源 clickPurchaseRatio）",
   `created_at` datetime NOT NULL COMMENT "入库时间",
-  `nf_asin_num` int NULL COMMENT "自然位竞品数。源 nfAsinNum，实测 100% 填充，47~440",
-  `ppc_asin_num` int NULL COMMENT "广告位竞品数（SP+SB+SBV 合计）。源 ppcAsinNum，实测 100%，16~365",
-  `sp_asin_num` int NULL COMMENT "SP 广告竞品数。源 spAsinNum，实测 100%，0~179",
-  `sp_recommended_asin_num` int NULL COMMENT "SP 推荐位竞品数。源 spRecommendedAsinNum，实测 100%，0~270",
-  `recommended_asin_num` int NULL COMMENT "推荐位竞品数。源 recommendedAsinNum，实测 100%，0~145",
-  `brand_asin_num` int NULL COMMENT "品牌位竞品数。源 brandAsinNum，实测 100%，0~179",
-  `ac_asin_num` int NULL COMMENT "AC（Amazon Choice）位竞品数。⚠️ 源 acAsinNum 实测恒 0，无区分度，建列仅供观察",
-  `sale_num` bigint NULL COMMENT "关键词带来的总销量。源 saleNum，实测 100%，0~424,204",
-  `click_shared` double NULL COMMENT "点击份额。源 clickShared，实测 81.3%，0~0.6396",
-  `conversion_shared` double NULL COMMENT "转化份额。源 conversionShared，实测 81.3%，0~0.75"
+  `nf_asin_num` int NULL COMMENT "自然位竞品数。源 nfAsinNum。⚠️ 落表仅 318/22,320 行（1.4%）——compete 源只覆盖 789 词，与本表词级交集 318。实测 47~440",
+  `ppc_asin_num` int NULL COMMENT "广告位竞品数（SP+SB+SBV 合计）。源 ppcAsinNum。落表 318 行，实测 21~365",
+  `sp_asin_num` int NULL COMMENT "SP 广告竞品数。源 spAsinNum。落表 318 行，实测 0~179",
+  `sp_recommended_asin_num` int NULL COMMENT "SP 推荐位竞品数。源 spRecommendedAsinNum。落表 318 行，实测 0~284",
+  `recommended_asin_num` int NULL COMMENT "推荐位竞品数。源 recommendedAsinNum。落表 318 行，实测 0~145",
+  `brand_asin_num` int NULL COMMENT "SB（品牌）位竞品数。源 brandAsinNum。落表 318 行，实测 0~179",
+  `ac_asin_num` int NULL COMMENT "AC（Amazon Choice）位竞品数。源 acAsinNum。落表 318 行但**实测 318 行全为 0**（AC 是稀缺标，当前样本无 AC 词）。保留该列：换品类/周后可能出现非 0，前端需区分「0」与「无数据」",
+  `sale_num` bigint NULL COMMENT "⚠️ 语义是「在售产品数」（该关键词下的在售商品数量），**不是销量**——schema-06 原注释写错，审计 §3 已纠正。源 saleNum，落表 318 行，实测 80~298,323",
+  `click_shared` double NULL COMMENT "ABA Top3 点击集中度（非「份额」，审计 §3 纠正）。源 clickShared，落表 264/22,320 行，实测 0~0.5472。页面与 conversion_shared 合并显示为「点击 x% / 转化 y%」",
+  `conversion_shared` double NULL COMMENT "ABA Top3 转化集中度（非「份额」）。源 conversionShared，落表 264 行，实测 0~0.75",
+  `video_asin_num` int NULL COMMENT "SBV（视频广告）位竞品数。源 videoAsinNum，页面列名「SBV产品数」。落表 321 行，实测值域 1~32"
 ) ENGINE=OLAP
 UNIQUE KEY(`keyword`, `country`, `granularity`, `stat_date`)
 COMMENT '关键词自身指标快照（搜索量、CPC、点击转化率等，与 ASIN 无关）'
@@ -1312,8 +1512,78 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_keyword_rank_history (117740 rows) =====
+-- ===== fact_keyword_rank_history (119670 rows) =====
 CREATE TABLE `fact_keyword_rank_history` (
+  `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
+  `country` varchar(8) NOT NULL COMMENT "站点",
+  `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）",
+  `rank_type` varchar(16) NOT NULL COMMENT "排名类型：nf/sp/sb/sbv/recSp（原设计只有 nf/sp，漏 3 种）",
+  `stat_date` date NOT NULL COMMENT "统计日期（按 allRankHistory.date[] 下标对齐）。⚠️ 分区列",
+  `keyword_id` bigint NULL COMMENT "原站关键词 ID（普通列）",
+  `rank_position` double NULL COMMENT "全局排名。⚠️ 改 DOUBLE：sb/sbv 的 rank 100% 带小数编码版位",
+  `page_no` int NULL COMMENT "页码，从 rankStr 的 ^p(d+) 解析。sb/sbv/recSp 无页码概念",
+  `page_size` int NULL COMMENT "页容量，从 rankStr 的 /(d+)$ 解析。实测非固定 48（还有 16/49/47/46/40）",
+  `slot` varchar(16) NULL COMMENT "版位：top/middle/bottom/tail。仅 sb/sbv 有，来自 rankStr 第 3 段",
+  `asin_order` int NULL COMMENT "同位次内序号。实测 sb/sbv 100% 非空，nf/sp 100% NULL",
+  `campaign_id` varchar(64) NULL COMMENT "广告活动 ID。实测 sp/sb/sbv 有值，nf 恒 NULL",
+  `mask_campaign_id` varchar(16) NULL COMMENT "前台 4 位短码（源 maskCampaignId）",
+  `created_at` datetime NOT NULL COMMENT "入库时间",
+  INDEX idx_rank_kw (`keyword`) USING INVERTED
+) ENGINE=OLAP
+UNIQUE KEY(`asin`, `country`, `keyword`, `rank_type`, `stat_date`)
+COMMENT 'ASIN×关键词 排名历史（日粒度）。主源 sif_asin_keyword.raw->allRankHistory。按月自动分区'
+AUTO PARTITION BY RANGE (date_trunc(`stat_date`, 'month'))
+(PARTITION p20240101000000 VALUES [('2024-01-01'), ('2024-02-01')),
+PARTITION p20240201000000 VALUES [('2024-02-01'), ('2024-03-01')),
+PARTITION p20240301000000 VALUES [('2024-03-01'), ('2024-04-01')),
+PARTITION p20240401000000 VALUES [('2024-04-01'), ('2024-05-01')),
+PARTITION p20240501000000 VALUES [('2024-05-01'), ('2024-06-01')),
+PARTITION p20240601000000 VALUES [('2024-06-01'), ('2024-07-01')),
+PARTITION p20240701000000 VALUES [('2024-07-01'), ('2024-08-01')),
+PARTITION p20240801000000 VALUES [('2024-08-01'), ('2024-09-01')),
+PARTITION p20240901000000 VALUES [('2024-09-01'), ('2024-10-01')),
+PARTITION p20241001000000 VALUES [('2024-10-01'), ('2024-11-01')),
+PARTITION p20241101000000 VALUES [('2024-11-01'), ('2024-12-01')),
+PARTITION p20241201000000 VALUES [('2024-12-01'), ('2025-01-01')),
+PARTITION p20250101000000 VALUES [('2025-01-01'), ('2025-02-01')),
+PARTITION p20250201000000 VALUES [('2025-02-01'), ('2025-03-01')),
+PARTITION p20250301000000 VALUES [('2025-03-01'), ('2025-04-01')),
+PARTITION p20250401000000 VALUES [('2025-04-01'), ('2025-05-01')),
+PARTITION p20250501000000 VALUES [('2025-05-01'), ('2025-06-01')),
+PARTITION p20250601000000 VALUES [('2025-06-01'), ('2025-07-01')),
+PARTITION p20250701000000 VALUES [('2025-07-01'), ('2025-08-01')),
+PARTITION p20250801000000 VALUES [('2025-08-01'), ('2025-09-01')),
+PARTITION p20250901000000 VALUES [('2025-09-01'), ('2025-10-01')),
+PARTITION p20251001000000 VALUES [('2025-10-01'), ('2025-11-01')),
+PARTITION p20251101000000 VALUES [('2025-11-01'), ('2025-12-01')),
+PARTITION p20251201000000 VALUES [('2025-12-01'), ('2026-01-01')),
+PARTITION p20260101000000 VALUES [('2026-01-01'), ('2026-02-01')),
+PARTITION p20260201000000 VALUES [('2026-02-01'), ('2026-03-01')),
+PARTITION p20260301000000 VALUES [('2026-03-01'), ('2026-04-01')),
+PARTITION p20260401000000 VALUES [('2026-04-01'), ('2026-05-01')),
+PARTITION p20260501000000 VALUES [('2026-05-01'), ('2026-06-01')),
+PARTITION p20260601000000 VALUES [('2026-06-01'), ('2026-07-01')),
+PARTITION p20260701000000 VALUES [('2026-07-01'), ('2026-08-01')),
+PARTITION p20260801000000 VALUES [('2026-08-01'), ('2026-09-01')),
+PARTITION p20260901000000 VALUES [('2026-09-01'), ('2026-10-01')))
+DISTRIBUTED BY HASH(`asin`) BUCKETS 4
+PROPERTIES (
+"replication_allocation" = "tag.location.default: 1",
+"min_load_replica_num" = "-1",
+"is_being_synced" = "false",
+"storage_medium" = "hdd",
+"storage_format" = "V2",
+"inverted_index_storage_format" = "V3",
+"enable_unique_key_merge_on_write" = "true",
+"light_schema_change" = "true",
+"disable_auto_compaction" = "false",
+"group_commit_interval_ms" = "10000",
+"group_commit_data_bytes" = "134217728",
+"enable_mow_light_delete" = "false"
+);
+
+-- ===== fact_keyword_rank_history_new (117740 rows) =====
+CREATE TABLE `fact_keyword_rank_history_new` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点",
   `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）",
@@ -1352,7 +1622,47 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== fact_keyword_search_trend (178046 rows) =====
+-- ===== fact_keyword_rank_history_old (117740 rows) =====
+CREATE TABLE `fact_keyword_rank_history_old` (
+  `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
+  `country` varchar(8) NOT NULL COMMENT "站点",
+  `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）",
+  `rank_type` varchar(16) NOT NULL COMMENT "排名类型：nf/sp/sb/sbv/recSp（原设计只有 nf/sp，漏 3 种）",
+  `stat_date` date NOT NULL COMMENT "统计日期（按 allRankHistory.date[] 下标对齐）。⚠️ 分区列",
+  `keyword_id` bigint NULL COMMENT "原站关键词 ID（普通列）",
+  `rank_position` double NULL COMMENT "全局排名。⚠️ 改 DOUBLE：sb/sbv 的 rank 100% 带小数编码版位",
+  `page_no` int NULL COMMENT "页码，从 rankStr 的 ^p(d+) 解析。sb/sbv/recSp 无页码概念",
+  `page_size` int NULL COMMENT "页容量，从 rankStr 的 /(d+)$ 解析。实测非固定 48（还有 16/49/47/46/40）",
+  `slot` varchar(16) NULL COMMENT "版位：top/middle/bottom/tail。仅 sb/sbv 有，来自 rankStr 第 3 段",
+  `asin_order` int NULL COMMENT "同位次内序号。实测 sb/sbv 100% 非空，nf/sp 100% NULL",
+  `campaign_id` varchar(64) NULL COMMENT "广告活动 ID。实测 sp/sb/sbv 有值，nf 恒 NULL",
+  `mask_campaign_id` varchar(16) NULL COMMENT "前台 4 位短码（源 maskCampaignId）",
+  `created_at` datetime NOT NULL COMMENT "入库时间",
+  INDEX idx_rank_kw (`keyword`) USING INVERTED
+) ENGINE=OLAP
+UNIQUE KEY(`asin`, `country`, `keyword`, `rank_type`, `stat_date`)
+COMMENT 'ASIN×关键词 排名历史（日粒度）。主源 sif_asin_keyword.raw->allRankHistory。按月自动分区'
+AUTO PARTITION BY RANGE (date_trunc(`stat_date`, 'month'))
+(PARTITION p20260701000000 VALUES [('2026-07-01'), ('2026-08-01')),
+PARTITION p20260801000000 VALUES [('2026-08-01'), ('2026-09-01')),
+PARTITION p20260901000000 VALUES [('2026-09-01'), ('2026-10-01')))
+DISTRIBUTED BY HASH(`asin`) BUCKETS 4
+PROPERTIES (
+"replication_allocation" = "tag.location.default: 1",
+"min_load_replica_num" = "-1",
+"is_being_synced" = "false",
+"storage_medium" = "hdd",
+"storage_format" = "V2",
+"inverted_index_storage_format" = "V3",
+"enable_unique_key_merge_on_write" = "true",
+"light_schema_change" = "true",
+"disable_auto_compaction" = "false",
+"group_commit_interval_ms" = "10000",
+"group_commit_data_bytes" = "134217728",
+"enable_mow_light_delete" = "false"
+);
+
+-- ===== fact_keyword_search_trend (178092 rows) =====
 CREATE TABLE `fact_keyword_search_trend` (
   `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -1412,7 +1722,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== query_logs (82 rows) =====
+-- ===== query_logs (372 rows) =====
 CREATE TABLE `query_logs` (
   `id` bigint NOT NULL COMMENT "雪花 ID",
   `user_id` bigint NOT NULL COMMENT "用户 ID",
@@ -1448,7 +1758,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== refresh_tokens (80 rows) =====
+-- ===== refresh_tokens (145 rows) =====
 CREATE TABLE `refresh_tokens` (
   `id` bigint NOT NULL COMMENT "雪花 ID",
   `user_id` bigint NOT NULL COMMENT "所属用户",
@@ -1478,7 +1788,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== rel_ad_campaign_product_ad (123 rows) =====
+-- ===== rel_ad_campaign_product_ad (174 rows) =====
 CREATE TABLE `rel_ad_campaign_product_ad` (
   `encrypt_campaign_id` varchar(64) NOT NULL COMMENT "广告活动 ID",
   `encrypt_ad_id` varchar(64) NOT NULL COMMENT "投放小组 ID",
@@ -1504,7 +1814,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== rel_asin_keyword_variant_exposure (0 rows) =====
+-- ===== rel_asin_keyword_variant_exposure (743 rows) =====
 CREATE TABLE `rel_asin_keyword_variant_exposure` (
   `parent_asin` varchar(16) NOT NULL COMMENT "父体/主查 ASIN",
   `variant_asin` varchar(16) NOT NULL COMMENT "变体 ASIN",
@@ -1534,7 +1844,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== rel_asin_variant (12745 rows) =====
+-- ===== rel_asin_variant (12779 rows) =====
 CREATE TABLE `rel_asin_variant` (
   `parent_asin` varchar(16) NOT NULL COMMENT "父体 ASIN",
   `child_asin` varchar(16) NOT NULL COMMENT "子体 ASIN",
@@ -1546,6 +1856,53 @@ CREATE TABLE `rel_asin_variant` (
 UNIQUE KEY(`parent_asin`, `child_asin`, `country`)
 COMMENT '父子体变体组关系'
 DISTRIBUTED BY HASH(`parent_asin`) BUCKETS 2
+PROPERTIES (
+"replication_allocation" = "tag.location.default: 1",
+"min_load_replica_num" = "-1",
+"is_being_synced" = "false",
+"storage_medium" = "hdd",
+"storage_format" = "V2",
+"inverted_index_storage_format" = "V3",
+"enable_unique_key_merge_on_write" = "true",
+"light_schema_change" = "true",
+"disable_auto_compaction" = "false",
+"group_commit_interval_ms" = "10000",
+"group_commit_data_bytes" = "134217728",
+"enable_mow_light_delete" = "false"
+);
+
+-- ===== rel_keyword_asin_traffic_share (1351 rows) =====
+CREATE TABLE `rel_keyword_asin_traffic_share` (
+  `keyword` varchar(128) NOT NULL COMMENT "关键词原文（主键）。ETL 需 btrim(lower()) 归一",
+  `country` varchar(8) NOT NULL COMMENT "站点。⚠️ 必须进主键",
+  `asin` varchar(16) NOT NULL COMMENT "占位的竞品 ASIN",
+  `rank_position` int NULL COMMENT "在该词结果里的序号（页面「#」列）。默认按 nf_score_ratio 降序",
+  `title` varchar(512) NULL COMMENT "商品标题。源 title",
+  `img` varchar(512) NULL COMMENT "主图 URL。源 img",
+  `price` decimal(12,2) NULL COMMENT "价格。源 price",
+  `rating_num` int NULL COMMENT "评论数。源 ratingNum",
+  `star` decimal(3,1) NULL COMMENT "评分。源 star",
+  `score` double NULL COMMENT "综合流量分。源 score",
+  `bought_in_past_month` varchar(32) NULL COMMENT "⚠️ 月销量是**分档字符串**如「6,000+」，不是数值。源 boughtInPastMonth，照原样存，前端不要当数字算",
+  `nf_score_ratio` double NULL COMMENT "自然流量份额。源 nfScoreRatio。页面「自然流量」列，默认排序键",
+  `sp_score_ratio` double NULL COMMENT "SP(常规)流量份额。源 spScoreRatio",
+  `sp_rec_score_ratio` double NULL COMMENT "SP(推荐)流量份额。源 spRecScoreRatio",
+  `brand_ad_score_ratio` double NULL COMMENT "SB(常规)流量份额。源 brandAdScoreRatio",
+  `video_ad_score_ratio` double NULL COMMENT "SBV 流量份额。⚠️ 源字段拼写是 vedioAdScoreRatio（video 误拼 vedio），ETL 取值时照抄源侧拼写",
+  `ac_score_ratio` double NULL COMMENT "AC(Amazon Choice) 位份额。源 acScoreRatio。⚠️ 实测 26/1,351 行非零、最大值 1.0 —— 与 metric 表的 ac_asin_num（318 行恒 0）不同，本列有真实区分度，页面「AC推荐流量」列要展示",
+  `er_score_ratio` double NULL COMMENT "源 erScoreRatio。⚠️ 实测 1,351 行全为 0（/amount 页的同族字段 erAsinNum 也是 0% 填充）。列保留观察，接口不返回、前端不展示 —— 原站页面表头也只有 6 个流量位列，不含 ER/TR",
+  `tr_score_ratio` double NULL COMMENT "源 trScoreRatio。⚠️ 同 er_score_ratio，实测全为 0",
+  `has_variants` boolean NULL COMMENT "是否有变体。⚠️ 源字段拼写是 hasVaiants（variants 误拼）",
+  `is_focus` boolean NULL COMMENT "是否已收藏（源 isFocus）。⚠️ 这是**原站的用户态**，Loom 应从自己的产品库判断，ETL 不要灌这列",
+  `ac` varchar(64) NULL COMMENT "AC 标类型。源 ac",
+  `stat_date` date NULL COMMENT "⚠️ 普通列不进主键：源响应无周维度（同 metric 表的竞品数量列），只能记抓取日。语义是「最近一次抓取的竞争格局」，不是「某周的」",
+  `source` varchar(32) NULL COMMENT "数据来源：real=competePattern 真实数据 / seed=生成器造。前端据此决定是否显示「模拟数据」标记",
+  `created_at` datetime NOT NULL COMMENT "入库时间",
+  INDEX idx_tshare_kw (`keyword`) USING INVERTED
+) ENGINE=OLAP
+UNIQUE KEY(`keyword`, `country`, `asin`)
+COMMENT '关键词 × ASIN × 流量位份额（/compete 流量位竞争格局）。源 competePattern。默认按 nf_score_ratio 降序。⚠️ 无周维度，份额是最近一次抓取的快照'
+DISTRIBUTED BY HASH(`keyword`) BUCKETS 8
 PROPERTIES (
 "replication_allocation" = "tag.location.default: 1",
 "min_load_replica_num" = "-1",
@@ -1598,7 +1955,7 @@ CREATE TABLE `rel_keyword_top_asin` (
   `title` varchar(1024) NULL COMMENT "商品标题（源 topAsins[].title，100% 非空）",
   `price` decimal(12,2) NULL COMMENT "价格（源 topAsins[].price，99.99% 非空）",
   `created_at` datetime NOT NULL COMMENT "入库时间",
-  `asin_role` varchar(8) NULL COMMENT "ASIN 角色：top=头部商品（源 topAsins[]，每词 8~10 个）/ conv=有转化数据（源 asinsClickPurchaseRatio[]，每词 0~3 个）。历史行为 NULL，按 top 处理",
+  `asin_role` varchar(8) NULL COMMENT "ASIN 角色：top=头部商品（源 topAsins[]）/ conv=有转化数据（源 asinsClickPurchaseRatio[]）。实测 top 46,451 行 + conv 10,344 行 = 56,795。⚠️ conv 行只有 430 行带 rank_position/title（主键不含 role，conv 覆盖同 ASIN 的 top 行时才继承）",
   `click_purchase_ratio` double NULL COMMENT "该 ASIN 在此关键词下的点击购买率。源 asinsClickPurchaseRatio[].clickPurchaseRatio，实测 0~1.3746。asin_role=top 的行为 NULL"
 ) ENGINE=OLAP
 UNIQUE KEY(`keyword`, `country`, `asin`)
@@ -1619,7 +1976,7 @@ PROPERTIES (
 "enable_mow_light_delete" = "false"
 );
 
--- ===== rel_rec_column_campaign_keyword (9086 rows) =====
+-- ===== rel_rec_column_campaign_keyword (9144 rows) =====
 CREATE TABLE `rel_rec_column_campaign_keyword` (
   `asin` varchar(16) NOT NULL COMMENT "ASIN 编号",
   `country` varchar(8) NOT NULL COMMENT "站点",
@@ -1735,22 +2092,23 @@ PROPERTIES (
 
 -- ===== user_favorites (0 rows) =====
 CREATE TABLE `user_favorites` (
-  `id` bigint NOT NULL COMMENT "雪花 ID",
-  `user_id` bigint NOT NULL COMMENT "用户 ID",
-  `favorite_type` varchar(16) NOT NULL COMMENT "focus 关注 / monitor 监控 / subscribe 订阅",
-  `target_type` varchar(16) NOT NULL COMMENT "asin / keyword",
-  `target_value` varchar(255) NOT NULL COMMENT "ASIN 或关键词文本",
-  `keyword_id` bigint NULL COMMENT "关键词时填，关联 dim_keyword",
-  `country` varchar(8) NOT NULL COMMENT "站点",
-  `group_name` varchar(64) NULL COMMENT "用户自建分组",
+  `user_id` bigint NOT NULL COMMENT "用户 ID（主键）",
+  `favorite_type` varchar(16) NOT NULL COMMENT "focus 关注 / monitor 监控 / subscribe 订阅（主键）",
+  `target_type` varchar(16) NOT NULL COMMENT "asin / keyword（主键）",
+  `target_value` varchar(255) NOT NULL COMMENT "ASIN 或关键词文本（主键）。关键词需 btrim(lower()) 归一",
+  `country` varchar(8) NOT NULL COMMENT "站点（主键）",
+  `id` bigint NULL COMMENT "雪花 ID。⚠️ 降为普通列：原先是唯一键，但业务唯一性是那 5 个字段",
+  `keyword_id` bigint NULL COMMENT "关键词时填，关联 dim_keyword。仅供对账，不做关联键",
+  `group_name` varchar(64) NULL COMMENT "用户自建分组。产品库/词库的分组靠这列",
   `note` varchar(512) NULL COMMENT "备注",
   `notify_enabled` tinyint NULL DEFAULT "0" COMMENT "仅 subscribe 用：排名变动是否通知",
   `created_at` datetime NOT NULL COMMENT "创建时间",
+  `library_id` bigint NULL COMMENT "归属库 ID，关联 user_library.id（M15a 建）。替代 group_name 的弱字符串关联 —— 改库名不必改这里每一行。⚠️ M15a 上线前恒为 NULL，届时把 group_name 的值迁成 library_id 并废弃 group_name",
   INDEX idx_uf_user (`user_id`) USING INVERTED
 ) ENGINE=OLAP
-UNIQUE KEY(`id`)
-COMMENT '用户关注/监控/订阅。应用层保证 (user_id,favorite_type,target_type,target_value,country) 唯一'
-DISTRIBUTED BY HASH(`id`) BUCKETS 2
+UNIQUE KEY(`user_id`, `favorite_type`, `target_type`, `target_value`, `country`)
+COMMENT '用户关注/监控/订阅。主键即业务唯一键（原先靠应用层保证，M14/M15 高频写会漏）。重复收藏靠 Unique Key 覆盖天然幂等'
+DISTRIBUTED BY HASH(`user_id`) BUCKETS 2
 PROPERTIES (
 "replication_allocation" = "tag.location.default: 1",
 "min_load_replica_num" = "-1",
@@ -1825,3 +2183,4 @@ PROPERTIES (
 "group_commit_data_bytes" = "134217728",
 "enable_mow_light_delete" = "false"
 );
+

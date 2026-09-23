@@ -23,11 +23,15 @@ export const COUNTRIES = [
  * 时间粒度。
  *
  * 实测结论：
- *   month —— 可用，格式 YYYY-MM
- *   day   —— 多变体自然位专用，该接口无 timePiece 参数
- *   week  —— 声明可用但非广告域实测报「服务异常」，我们不实现（见 system_configs 开关）
+ *   month —— 唯一可用，格式 YYYY-MM。库内实测 time_piece_type 全为 'month'
+ *   day   —— 多变体自然位是日粒度，但那个接口本身没有 timePiece 参数
+ *             （它直接返回 dates 数组），所以不走 TimePieceQueryDto
+ *   week  —— 声明可用但非广告域实测报「服务异常」，不实现
+ *
+ * 曾经导出过 TIME_PIECE_TYPES = ['month','day']，但 'day' 在所有走
+ * TimePieceQueryDto 的接口上都没有数据、且下游 SQL 写死 month，
+ * 留着只会让调用方以为能传。已移除，取值直接内联在 @IsIn 里。
  */
-export const TIME_PIECE_TYPES = ['month', 'day'] as const
 
 /** ASIN 格式：10 位大写字母数字，B0 开头是常见形态但不强制 */
 const ASIN_RE = /^[A-Z0-9]{10}$/
@@ -65,13 +69,24 @@ export class AsinQueryDto {
 }
 
 export class TimePieceQueryDto extends AsinQueryDto {
+  /**
+   * 时间粒度。
+   *
+   * ⚠️ 目前**只接受 month**，传其他值直接报错。
+   *
+   * 原因：这些事实表（fact_asin_traffic_channel / fact_asin_keyword_snapshot 等）
+   * 实测库内 time_piece_type 全部是 'month'，day 与 week 零行。
+   * 早先这里允许 'day'，但下游 SQL 写死 `time_piece_type = 'month'`，
+   * 传 day 会被**静默忽略**并返回月度数据 —— 用户以为看的是日数据，其实不是，
+   * 这比直接报错更糟。等真有日粒度数据入库，再把 'day' 加回来并同步改 SQL。
+   */
   @IsOptional()
-  @IsIn(TIME_PIECE_TYPES as unknown as string[], {
-message: '时间粒度只支持 month 或 day（week 原站实测不可用）',
+  @IsIn(['month'], {
+    message: '时间粒度目前只支持 month（day/week 暂无数据，week 原站实测不可用）',
   })
   timePieceType?: string = 'month'
 
-  /** month 格式 YYYY-MM；day 格式 YYYY-MM-DD */
+  /** month 格式 YYYY-MM */
   @IsOptional()
   @IsString()
   @Matches(/^\d{4}-\d{2}(-\d{2})?$/, { message: '时间值格式应为 YYYY-MM 或 YYYY-MM-DD' })

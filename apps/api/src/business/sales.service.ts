@@ -114,21 +114,27 @@ export class SalesService {
     const asinList = variants.map((v: any) => v.asin)
     const latest = asinList.length
       ? await this.db.query<any>(
-       // 子查询的过滤条件要与外层**完全一致**（country + 同一批 ASIN）。
-          //
-          // ⚠️ 只按 country 取最新月是隐患：那是「全站点最新月」，而各 ASIN
-          // 的数据进度并不齐。一旦某组变体只到上个月，就会一行都查不到，
-          // 页面把「上月有销量」显示成「无销量数据」。同类问题在
-          // traffic.service.ts / keywords.service.ts 都实际发生过
-          // （keywords 那张表实测 19% 的 ASIN 落后一个月）。
-          // 本表当前各组进度恰好一致，但不能依赖这个巧合。
-          `SELECT asin, stat_month, bought_lower_bound, bought_label
-    FROM fact_asin_bought_monthly
-        WHERE country = ? AND asin IN (${asinList.map(() => '?').join(', ')})
-   AND stat_month = (
-              SELECT MAX(stat_month) FROM fact_asin_bought_monthly
-               WHERE country = ? AND asin IN (${asinList.map(() => '?').join(', ')})
-            )`,
+          /**
+           * 取每个子体**各自**的最新月，而不是这批 ASIN 的「全局最新月」。
+           *
+           * 原先用标量子查询取全局最新月，注释里写「本表当前各组进度恰好一致」——
+           * 这个假设是错的。实测 US 站 38,484 个 ASIN 中有 7,040 个（18%）
+           * 最新月落后于全局最新月，这些 ASIN 会一行都查不到，
+           * 页面把「上月有销量」显示成「无销量数据」。
+           *
+           * 改成按 asin 分组取各自 MAX(stat_month) 再 JOIN 回来，
+           * 每个子体都能拿到它自己最新的那个月。
+           * 返回里带 stat_month，调用方可据此提示「数据截止到 X 月」。
+           */
+          `SELECT b.asin, b.stat_month, b.bought_lower_bound, b.bought_label
+    FROM fact_asin_bought_monthly b
+         JOIN (
+           SELECT asin, MAX(stat_month) AS mx
+             FROM fact_asin_bought_monthly
+            WHERE country = ? AND asin IN (${asinList.map(() => '?').join(', ')})
+            GROUP BY asin
+         ) m ON m.asin = b.asin AND m.mx = b.stat_month
+        WHERE b.country = ? AND b.asin IN (${asinList.map(() => '?').join(', ')})`,
        [country, ...asinList, country, ...asinList],
      )
    : []
